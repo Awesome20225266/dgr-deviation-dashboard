@@ -4,16 +4,13 @@ import pandas as pd
 import duckdb
 from datetime import datetime
 
-# ========== CONFIGURATION ==========
-MAPPING_FILE = "Mapping Sheet.xlsx"     # Your mapping file (must be in same folder)
-DGR_FOLDER = "DGR_Backup"               # Folder with all your DGR Excel files
-DB_FILE = "dgr_data.duckdb"             # Output DuckDB file
-TABLE_NAME = "dgr_data"                 # Table name in DuckDB
+MAPPING_FILE = "Mapping Sheet.xlsx"
+DGR_FOLDER = "DGR_Backup"
+DB_FILE = "dgr_data.duckdb"
+TABLE_NAME = "dgr_data"
 GIT_COMMIT_MSG = "Auto update DGR data and scripts"
 
-# ========== UTILITY ==========
 def clean_value(v):
-    """Robust percent/number cleaner."""
     if pd.isnull(v):
         return None
     vstr = str(v).replace("−", "-").replace("–", "-").strip()
@@ -29,7 +26,6 @@ def clean_value(v):
     except:
         return None
 
-# ========== DATA IMPORT ==========
 def import_dgr_to_duckdb():
     if not os.path.exists(MAPPING_FILE):
         print(f"ERROR: Missing {MAPPING_FILE}")
@@ -38,25 +34,29 @@ def import_dgr_to_duckdb():
         print(f"ERROR: Missing {DGR_FOLDER} folder")
         return
 
-    # Remove old DB (fresh import each run)
-    if os.path.exists(DB_FILE):
-        os.remove(DB_FILE)
-
+    # Create DB if not exists
+    fresh_db = not os.path.exists(DB_FILE)
     con = duckdb.connect(DB_FILE)
-    con.execute(f"""
-    CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
-        plant VARCHAR,
-        file_name VARCHAR,
-        date DATE,
-        input_name VARCHAR,
-        value DOUBLE
-    )
-    """)
+
+    if fresh_db:
+        con.execute(f"""
+        CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
+            plant VARCHAR,
+            file_name VARCHAR,
+            date DATE,
+            input_name VARCHAR,
+            value DOUBLE
+        )
+        """)
+        print("Created fresh database and table.")
+    else:
+        print("Database exists. Will only add new rows.")
 
     mapping_df = pd.read_excel(MAPPING_FILE)
     print(f"Loaded mapping for {mapping_df.shape[0]} plants/rows.")
 
     total_rows = 0
+    skipped_rows = 0
     for idx, row in mapping_df.iterrows():
         plant = str(row["Plant_Name"])
         fname = str(row["File_Name"])
@@ -66,7 +66,6 @@ def import_dgr_to_duckdb():
         data_start_col = str(row["Data_Start_Col"]).strip()
         data_end_col = str(row["Data_End_Col"]).strip()
 
-        # Try .xlsx and .xlsm extensions
         found = False
         for ext in [".xlsx", ".xlsm"]:
             fpath = os.path.join(DGR_FOLDER, fname + ext)
@@ -105,18 +104,26 @@ def import_dgr_to_duckdb():
                 v = clean_value(r[col])
                 if v is None:
                     continue
+                # Check if this (plant, file, date, input_name) is already in DB
+                exists = con.execute(f"""
+                    SELECT 1 FROM {TABLE_NAME}
+                    WHERE plant = ? AND file_name = ? AND date = ? AND input_name = ?
+                    LIMIT 1
+                """, [plant, fname, thedate.date(), col]).fetchone()
+                if exists:
+                    skipped_rows += 1
+                    continue
                 con.execute(f"""
                     INSERT INTO {TABLE_NAME} (plant, file_name, date, input_name, value)
                     VALUES (?, ?, ?, ?, ?)
                 """, [plant, fname, thedate.date(), col, v])
                 count += 1
         total_rows += count
-        print(f"✅ Imported {count} rows for {plant}")
+        print(f"✅ Imported {count} new rows for {plant} (skipped {skipped_rows} duplicates)")
 
     con.close()
-    print(f"✅ All relevant DGR data imported into {DB_FILE} ({total_rows} total rows).")
+    print(f"✅ All new DGR data imported into {DB_FILE} ({total_rows} new rows, {skipped_rows} skipped).")
 
-# ========== GIT PUSH ==========
 def git_push():
     print("Running Git push script...")
     try:
@@ -136,9 +143,8 @@ def git_push():
         else:
             print(f"❌ Git error: {e}")
 
-# ========== MAIN ==========
 def main():
-    print(f"=== DGR DB + Git update started at {datetime.now()} ===")
+    print(f"=== DGR DB (incremental) + Git update started at {datetime.now()} ===")
     import_dgr_to_duckdb()
     git_push()
     print(f"=== Completed at {datetime.now()} ===")
