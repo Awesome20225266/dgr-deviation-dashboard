@@ -19,7 +19,6 @@ def get_base64_of_bin_file(bin_file):
     return base64.b64encode(data).decode()
 
 img_path = "JSW-Energy-completes-acquisition-of-4.7-GW-renewable-energy-platform-from-O2-Power.jpg"
- # Update as needed!
 img_base64 = get_base64_of_bin_file(img_path)
 
 background_css = f"""
@@ -134,24 +133,37 @@ with tab1:
 
                 table_rows = []
                 serial = 1
-                for eq in mapped_equipment:
-                    flagged = df[
-                        (df["input_name"] == eq)
-                        & (df["value"] <= threshold)
-                        & (df["value"] != 100)
-                    ]
-                    if not flagged.empty:
-                        avg_deviation = flagged["value"].mean()
-                        num_days = flagged["date"].nunique()
-                        table_rows.append([
-                            serial, plant_name, eq, f"{avg_deviation:.2f}%", num_days
-                        ])
-                        serial += 1
-                outdf = pd.DataFrame(table_rows, columns=[
-                    "Serial No.", "Plant_Name", "Equipment_Name", "%Deviation", "No. of Days Deviated"
-                ])
+                if date_start == date_end:
+                    # Only show inverters with deviation ≤ threshold for the single day
+                    day = pd.to_datetime(date_start)
+                    for eq in mapped_equipment:
+                        eq_val = df[(df["input_name"] == eq) & (df["date"] == day)]
+                        if not eq_val.empty:
+                            value = eq_val["value"].iloc[0]
+                            if value <= threshold:
+                                table_rows.append([
+                                    serial, plant_name, eq, f"{value:.2f}%", 1
+                                ])
+                                serial += 1
+                    outdf = pd.DataFrame(table_rows, columns=[
+                        "Serial No.", "Plant_Name", "Equipment_Name", "%Deviation", "No. of Days (shown: 1)"
+                    ])
+                else:
+                    # Show ALL inverters with average deviation for the date range
+                    for eq in mapped_equipment:
+                        eq_df = df[df["input_name"] == eq]
+                        if not eq_df.empty:
+                            avg_deviation = eq_df["value"].mean()
+                            num_days = eq_df["date"].nunique()
+                            table_rows.append([
+                                serial, plant_name, eq, f"{avg_deviation:.2f}%", num_days
+                            ])
+                            serial += 1
+                    outdf = pd.DataFrame(table_rows, columns=[
+                        "Serial No.", "Plant_Name", "Equipment_Name", "Avg %Deviation", "No. of Days in Range"
+                    ])
                 if outdf.empty:
-                    st.info("No deviations below threshold found for this plant in selected range.")
+                    st.info("No underperformers found for the selected criteria.")
                 else:
                     st.markdown("### Equipment-wise Deviation Table")
                     st.dataframe(outdf, use_container_width=True)
@@ -206,48 +218,68 @@ with tab2:
                 plant_name = plant_select[0]
                 equipment_names = df["input_name"].unique().tolist()
                 table_rows = []
-                for eq in equipment_names:
-                    flagged = df[
-                        (df["input_name"] == eq)
-                        & (df["value"] <= threshold)
-                        & (df["value"] != 100)
-                    ]
-                    if not flagged.empty:
-                        avg_deviation = flagged["value"].mean()
-                        num_days = flagged["date"].nunique()
-                        table_rows.append([eq, avg_deviation, num_days])
-                outdf = pd.DataFrame(table_rows, columns=["Equipment Name", "%Deviation", "No. of Days Deviated"])
-                # SORT: Most negative (worst) at top, least negative (best) at bottom
-                outdf = outdf.sort_values("%Deviation").reset_index(drop=True)
-                outdf["%Deviation"] = outdf["%Deviation"].map(lambda x: f"{x:.2f}%" if pd.notnull(x) else "-")
+                if date_start == date_end:
+                    # Only show underperformers for that day, ranked by deviation
+                    day = pd.to_datetime(date_start)
+                    for eq in equipment_names:
+                        eq_val = df[(df["input_name"] == eq) & (df["date"] == day)]
+                        if not eq_val.empty:
+                            value = eq_val["value"].iloc[0]
+                            if value <= threshold:
+                                table_rows.append([eq, value, 1])
+                    outdf = pd.DataFrame(table_rows, columns=["Equipment Name", "Deviation", "No. of Days"])
+                else:
+                    # Rank all by avg deviation in range
+                    for eq in equipment_names:
+                        eq_df = df[df["input_name"] == eq]
+                        if not eq_df.empty:
+                            avg_dev = eq_df["value"].mean()
+                            days = eq_df["date"].nunique()
+                            table_rows.append([eq, avg_dev, days])
+                    outdf = pd.DataFrame(table_rows, columns=["Equipment Name", "Deviation", "No. of Days"])
+
+                # --- SORT: most negative (worst) at top, most positive (best) at bottom ---
+                outdf = outdf.sort_values("Deviation", ascending=True).reset_index(drop=True)
+                outdf["Rank"] = outdf.index + 1
+                outdf["Deviation"] = outdf["Deviation"].map(lambda x: f"{x:.2f}%" if pd.notnull(x) else "-")
+
                 st.markdown("### 🌟 Equipment-wise Deviation Ranking")
                 st.dataframe(outdf, use_container_width=True)
 
-                dev_numeric = [float(x.replace('%','')) for x in outdf["%Deviation"] if x != "-"]
-                fig = go.Figure()
+                # --- Bar Plot with Colors ---
+                dev_numeric = [float(x.replace('%','')) for x in outdf["Deviation"] if x != "-"]
+                equipment_names = outdf["Equipment Name"].tolist()
+
+                bar_colors = []
                 if dev_numeric:
-                    cmap = matplotlib.colormaps['RdYlGn']
                     min_dev = min(dev_numeric)
                     max_dev = max(dev_numeric)
-                    if min_dev == max_dev:
-                        norm = np.ones(len(dev_numeric)) * 1.0
-                    else:
-                        norm = 1 - (np.array(dev_numeric) - min_dev) / (max_dev - min_dev)
-                    bar_colors = [matplotlib.colors.rgb2hex(cmap(x)) for x in norm]
-                    fig = go.Figure(go.Bar(
-                        y=outdf["Equipment Name"],
-                        x=dev_numeric,
-                        orientation='h',
-                        marker_color=bar_colors,
-                        text=outdf["%Deviation"],
-                        textposition='outside',
-                        insidetextanchor='end',
-                        hovertemplate="Equipment: %{y}<br>Deviation: %{x:.2f}%<extra></extra>"
-                    ))
-                    fig.update_yaxes(autorange="reversed")
+                    for v in dev_numeric:
+                        if v < 0:
+                            norm = min(abs(v) / max(abs(min_dev), 1), 1)
+                            bar_colors.append(matplotlib.colors.rgb2hex(matplotlib.colormaps['Reds'](0.4 + 0.6*norm)))
+                        elif v > 0:
+                            norm = min(v / max(max_dev, 1), 1)
+                            bar_colors.append(matplotlib.colors.rgb2hex(matplotlib.colormaps['Greens'](0.4 + 0.6*norm)))
+                        else:
+                            bar_colors.append('#ffff66')
+                else:
+                    bar_colors = None
+
+                fig = go.Figure(go.Bar(
+                    y=equipment_names,
+                    x=dev_numeric,
+                    orientation='h',
+                    marker_color=bar_colors if bar_colors else 'grey',
+                    text=[f"{x:.2f}%" for x in dev_numeric],
+                    textposition='outside',
+                    insidetextanchor='end',
+                    hovertemplate="Equipment: %{y}<br>Deviation: %{x:.2f}%<extra></extra>"
+                ))
+                fig.update_yaxes(autorange="reversed")  # Top = most negative
                 fig.update_layout(
-                    title="🏆 Equipment Ranking by Avg. Deviation (Lower is Worse)",
-                    xaxis_title="Avg. Deviation (%)",
+                    title="🏆 Equipment Ranking by Deviation (Red = Worst, Green = Best)",
+                    xaxis_title="Deviation (%)",
                     yaxis_title="Equipment",
                     font=dict(family="Segoe UI, Arial", size=16),
                     xaxis=dict(tickformat=".2f"),
@@ -267,38 +299,41 @@ with tab2:
                     norm_deviation = 100 * inputs_deviated / total_input_cells if total_input_cells > 0 else 0
                     rows.append([plant, norm_deviation])
                 ranked = pd.DataFrame(rows, columns=["Plant", "Normalised Deviation (%)"])
-                # SORT: Highest deviation at top (red), lowest at bottom (green)
-                ranked = ranked.sort_values("Normalised Deviation (%)", ascending=False).reset_index(drop=True)
+                # ABS ranking (lowest abs = greenest, highest abs = reddest)
+                ranked["AbsDeviation"] = ranked["Normalised Deviation (%)"].abs()
+                ranked = ranked.sort_values("AbsDeviation").reset_index(drop=True)
                 ranked['Rank'] = ranked.index + 1
 
-                st.markdown("### 🌟 Plant Normalised Deviation Ranking")
-                st.dataframe(ranked, use_container_width=True)
+                st.markdown("### 🌟 Plant Normalised Deviation Ranking (Lower ABS = Better, Higher ABS = Redder)")
+                st.dataframe(ranked.drop(columns="AbsDeviation"), use_container_width=True)
 
+                abs_devs = ranked["AbsDeviation"]
                 dev_numeric = ranked["Normalised Deviation (%)"].tolist()
-                fig = go.Figure()
-                if dev_numeric:
-                    cmap = matplotlib.colormaps['RdYlGn']
-                    min_dev = min(dev_numeric)
-                    max_dev = max(dev_numeric)
+                if len(abs_devs) > 0:
+                    cmap = matplotlib.colormaps['RdYlGn_r']
+                    min_dev = np.min(abs_devs)
+                    max_dev = np.max(abs_devs)
                     if min_dev == max_dev:
-                        norm = np.ones(len(dev_numeric)) * 1.0
+                        norm = np.ones(len(abs_devs)) * 0.5
                     else:
-                        norm = 1 - (np.array(dev_numeric) - min_dev) / (max_dev - min_dev)
+                        norm = (abs_devs - min_dev) / (max_dev - min_dev)
                     bar_colors = [matplotlib.colors.rgb2hex(cmap(x)) for x in norm]
-                    text_labels = [f"Rank {row.Rank}, {row['Normalised Deviation (%)']:.2f}%" for idx, row in ranked.iterrows()]
-                    fig = go.Figure(go.Bar(
-                        y=ranked["Plant"],
-                        x=dev_numeric,
-                        orientation='h',
-                        marker_color=bar_colors,
-                        text=text_labels,
-                        textposition='outside',
-                        insidetextanchor='end',
-                        hovertemplate="Plant: %{y}<br>Deviation: %{x:.2f}%<extra></extra>"
-                    ))
-                    fig.update_yaxes(autorange="reversed")
+                else:
+                    bar_colors = None
+                text_labels = [f"Rank {row.Rank}, {row['Normalised Deviation (%)']:.2f}%" for idx, row in ranked.iterrows()]
+                fig = go.Figure(go.Bar(
+                    y=ranked["Plant"],
+                    x=dev_numeric,
+                    orientation='h',
+                    marker_color=bar_colors if bar_colors else 'grey',
+                    text=text_labels,
+                    textposition='outside',
+                    insidetextanchor='end',
+                    hovertemplate="Plant: %{y}<br>Deviation: %{x:.2f}%<extra></extra>"
+                ))
+                fig.update_yaxes(autorange="reversed")
                 fig.update_layout(
-                    title="🏆 Plant Ranking by Normalised Deviation (Higher is Worse, Redder)",
+                    title="🏆 Plant Ranking by |Normalised Deviation| (Lower ABS = Greener, Higher ABS = Redder)",
                     xaxis_title="Normalised Deviation (%)",
                     yaxis_title="Plant",
                     font=dict(family="Segoe UI, Arial", size=16),

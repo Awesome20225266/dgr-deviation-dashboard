@@ -2,16 +2,18 @@ import streamlit as st
 import pandas as pd
 import duckdb
 from datetime import datetime
+import plotly.graph_objects as go
+import matplotlib
+import numpy as np
 
 DB_PATH = "dgr_data.duckdb"
 TABLE_NAME = "dgr_data"
 MAPPING_SHEET = "Mapping Sheet.xlsx"
 
-st.set_page_config(page_title="DGR Deviation Dashboard", layout="wide")
-st.title("📊 DGR Deviation Dashboard")
-st.markdown("Analyze inverter/block-wise deviation across plants using data from DuckDB.")
+st.set_page_config(page_title="Plant Ranking Dashboard", layout="wide")
+st.title("🏆 Plant Normalised Deviation Ranking")
+st.markdown("See plant rankings by Absolute Normalised Deviation (%). Lowest ABS = best (green), highest ABS = worst (red)!")
 
-# --- Load Mapping Sheet ---
 @st.cache_data
 def load_mapping():
     return pd.read_excel(MAPPING_SHEET)
@@ -39,10 +41,9 @@ else:
     st.warning("No data found in the database for selected plants.")
     st.stop()
 
-if st.button("Generate Table"):
-    with st.spinner("Processing..."):
+if st.button("Generate Ranking"):
+    with st.spinner("Ranking..."):
         with duckdb.connect(DB_PATH) as con:
-            # Pull all data in range for selected plants
             query = f"""
                 SELECT plant, date, input_name, value
                 FROM {TABLE_NAME}
@@ -51,77 +52,53 @@ if st.button("Generate Table"):
             """
             params = plant_select + [date_start, date_end]
             df = con.execute(query, params).df()
-
         if df.empty:
             st.warning("No data found in selected range.")
             st.stop()
+        rows = []
+        for plant in df['plant'].unique():
+            plant_df = df[df['plant'] == plant]
+            total_input_cells = plant_df['value'].notnull().sum()
+            inputs_deviated = (plant_df['value'] <= threshold).sum()
+            norm_deviation = 100 * inputs_deviated / total_input_cells if total_input_cells > 0 else 0
+            rows.append([plant, norm_deviation])
+        ranked = pd.DataFrame(rows, columns=["Plant", "Normalised Deviation (%)"])
 
-        # --- SINGLE PLANT MODE ---
-        if len(plant_select) == 1:
-            plant_name = plant_select[0]
-            mapping_row = mapping_df[mapping_df["Plant_Name"] == plant_name].iloc[0]
-            start_col = mapping_row["Data_Start_Col"]
-            end_col = mapping_row["Data_End_Col"]
-            equipment_names = df["input_name"].unique().tolist()
-            # Only take mapped columns for this plant (from mapping)
-            if start_col in equipment_names and end_col in equipment_names:
-                sidx = equipment_names.index(start_col)
-                eidx = equipment_names.index(end_col)
-                mapped_equipment = equipment_names[sidx:eidx+1]
-            else:
-                mapped_equipment = equipment_names
+        # Sort and rank by ABS value
+        ranked = ranked.reindex(ranked["Normalised Deviation (%)"].abs().sort_values().index)
+        ranked = ranked.reset_index(drop=True)
+        ranked['Rank'] = ranked.index + 1
 
-            table_rows = []
-            serial = 1
-            for eq in mapped_equipment:
-                flagged = df[(df["input_name"] == eq) & (df["value"] <= threshold)]
-                if not flagged.empty:
-                    avg_deviation = flagged["value"].mean()
-                    num_days = flagged["date"].nunique()
-                    table_rows.append([
-                        serial, plant_name, eq, f"{avg_deviation:.2f}%", num_days
-                    ])
-                    serial += 1
-            # Display
-            outdf = pd.DataFrame(table_rows, columns=[
-                "Serial No.", "Plant_Name", "Equipment_Name", "%Deviation", "No. of Days Deviated"
-            ])
-            if outdf.empty:
-                st.info("No deviations below threshold found for this plant in selected range.")
-            else:
-                st.markdown("### Equipment-wise Deviation Table")
-                st.dataframe(outdf, use_container_width=True)
+        st.markdown("### 🌟 Plant Normalised Deviation Ranking (by Absolute Value)")
+        st.dataframe(ranked, use_container_width=True)
 
-        # --- MULTI-PLANT MODE ---
-        else:
-            rows = []
-            serial = 1
-            for plant in df['plant'].unique():
-                plant_df = df[df['plant'] == plant]
-                # Total non-blank cells in selected range (denominator)
-                total_input_cells = plant_df['value'].notnull().sum()
-                # All cells ≤ threshold (numerator)
-                inputs_deviated = (plant_df['value'] <= threshold).sum()
-                # Normalised Deviation %
-                norm_deviation = 100 * inputs_deviated / total_input_cells if total_input_cells > 0 else 0
-                # Average deviation for flagged cells (optional)
-                avg_deviation = plant_df[plant_df['value'] <= threshold]['value'].mean() if inputs_deviated > 0 else 0
+        # Color by ABS (green = best, red = worst)
+        abs_devs = ranked["Normalised Deviation (%)"].abs()
+        norm = (abs_devs - abs_devs.min()) / (abs_devs.max() - abs_devs.min()) if len(abs_devs) > 1 else abs_devs
+        cmap = matplotlib.colormaps['RdYlGn_r']
+        bar_colors = [matplotlib.colors.rgb2hex(cmap(x)) for x in norm]
 
-                rows.append([
-                    serial,
-                    plant,
-                    f"{avg_deviation:.2f}%",
-                    inputs_deviated,
-                    total_input_cells,
-                    f"{norm_deviation:.2f}%"
-                ])
-                serial += 1
+        text_labels = [f"Rank {row.Rank}, {row['Normalised Deviation (%)']:.2f}%" for idx, row in ranked.iterrows()]
 
-            outdf = pd.DataFrame(rows, columns=[
-                "Serial No.", "Plant_Name", "%Deviation", "No. of Inputs Deviated", "Total Inputs", "Normalised Deviation (%)"
-            ])
-            if outdf.empty:
-                st.info("No deviations below threshold found for any plant in selected range.")
-            else:
-                st.markdown("### Plant-wise Deviation Summary")
-                st.dataframe(outdf, use_container_width=True)
+        fig = go.Figure(go.Bar(
+            y=ranked["Plant"],  # Y-axis: plant names
+            x=ranked["Normalised Deviation (%)"],  # X-axis: deviation %
+            orientation='h',
+            marker_color=bar_colors,
+            text=text_labels,
+            textposition='outside',
+            insidetextanchor='end',
+            hovertemplate="Plant: %{y}<br>Deviation: %{x:.2f}%<extra></extra>"
+        ))
+        fig.update_yaxes(autorange="reversed")
+        fig.update_layout(
+            title="Plant Ranking by |Normalised Deviation| (Lower ABS = Better, Higher ABS = Redder)",
+            xaxis_title="Normalised Deviation (%)",
+            yaxis_title="Plant",
+            font=dict(family="Segoe UI, Arial", size=16),
+            xaxis=dict(tickformat=".2f"),
+            plot_bgcolor='white',
+            margin=dict(t=70, l=150, r=40),
+            height=100 + 60 * len(ranked),
+        )
+        st.plotly_chart(fig, use_container_width=True)
