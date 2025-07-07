@@ -70,7 +70,11 @@ if not plant_select:
     st.warning("Please select at least one plant.")
     st.stop()
 
-threshold = st.number_input("Deviation Threshold (e.g., -3 means ≤ -3%)", value=-3.0, step=0.1)
+# --- Threshold ---
+if "threshold" not in st.session_state:
+    st.session_state["threshold"] = -3.0
+threshold = st.number_input("Deviation Threshold (e.g., -3 means ≤ -3%)",
+                            value=st.session_state["threshold"], step=0.1, key="threshold")
 
 with duckdb.connect(DB_PATH) as con:
     date_query = f"""
@@ -117,6 +121,8 @@ with tab1:
                 st.warning("No data found in selected range.")
                 st.stop()
 
+            threshold_label = f"No. of days ≤ {threshold}%"
+
             # --- SINGLE PLANT MODE ---
             if len(plant_select) == 1:
                 plant_name = plant_select[0]
@@ -134,33 +140,32 @@ with tab1:
                 table_rows = []
                 serial = 1
                 if date_start == date_end:
-                    # Only show inverters with deviation ≤ threshold for the single day
                     day = pd.to_datetime(date_start)
                     for eq in mapped_equipment:
                         eq_val = df[(df["input_name"] == eq) & (df["date"] == day)]
-                        if not eq_val.empty:
-                            value = eq_val["value"].iloc[0]
-                            if value <= threshold:
-                                table_rows.append([
-                                    serial, plant_name, eq, f"{value:.2f}%", 1
-                                ])
-                                serial += 1
+                        value = eq_val["value"].iloc[0] if not eq_val.empty else None
+                        count = 1 if (not eq_val.empty and value <= threshold) else 0
+                        if value is not None:
+                            table_rows.append([
+                                serial, plant_name, eq, f"{value:.2f}%", 1, count
+                            ])
+                            serial += 1
                     outdf = pd.DataFrame(table_rows, columns=[
-                        "Serial No.", "Plant_Name", "Equipment_Name", "%Deviation", "No. of Days (shown: 1)"
+                        "Serial No.", "Plant_Name", "Equipment_Name", "%Deviation", "No. of Days (shown: 1)", threshold_label
                     ])
                 else:
-                    # Show ALL inverters with average deviation for the date range
                     for eq in mapped_equipment:
                         eq_df = df[df["input_name"] == eq]
                         if not eq_df.empty:
                             avg_deviation = eq_df["value"].mean()
                             num_days = eq_df["date"].nunique()
+                            count = (eq_df["value"] <= threshold).sum()
                             table_rows.append([
-                                serial, plant_name, eq, f"{avg_deviation:.2f}%", num_days
+                                serial, plant_name, eq, f"{avg_deviation:.2f}%", num_days, count
                             ])
                             serial += 1
                     outdf = pd.DataFrame(table_rows, columns=[
-                        "Serial No.", "Plant_Name", "Equipment_Name", "Avg %Deviation", "No. of Days in Range"
+                        "Serial No.", "Plant_Name", "Equipment_Name", "Avg %Deviation", "No. of Days in Range", threshold_label
                     ])
                 if outdf.empty:
                     st.info("No underperformers found for the selected criteria.")
@@ -184,11 +189,12 @@ with tab1:
                         f"{avg_deviation:.2f}%",
                         inputs_deviated,
                         total_input_cells,
-                        f"{norm_deviation:.2f}%"
+                        f"{norm_deviation:.2f}%",
+                        inputs_deviated   # This is "No. of Inputs ≤ threshold"
                     ])
                     serial += 1
                 outdf = pd.DataFrame(rows, columns=[
-                    "Serial No.", "Plant_Name", "%Deviation", "No. of Inputs Deviated", "Total Inputs", "Normalised Deviation (%)"
+                    "Serial No.", "Plant_Name", "%Deviation", "No. of Inputs Deviated", "Total Inputs", "Normalised Deviation (%)", f"No. of Inputs ≤ {threshold}%"
                 ])
                 if outdf.empty:
                     st.info("No deviations below threshold found for any plant in selected range.")
@@ -218,36 +224,35 @@ with tab2:
                 plant_name = plant_select[0]
                 equipment_names = df["input_name"].unique().tolist()
                 table_rows = []
+                threshold_label = f"No. of days ≤ {threshold}%"
                 if date_start == date_end:
-                    # Only show underperformers for that day, ranked by deviation
                     day = pd.to_datetime(date_start)
                     for eq in equipment_names:
-                        eq_val = df[(df["input_name"] == eq) & (df["date"] == day)]
-                        if not eq_val.empty:
-                            value = eq_val["value"].iloc[0]
-                            if value <= threshold:
-                                table_rows.append([eq, value, 1])
-                    outdf = pd.DataFrame(table_rows, columns=["Equipment Name", "Deviation", "No. of Days"])
+                        eq_vals = df[(df["input_name"] == eq) & (df["date"] == day)]
+                        value = eq_vals["value"].iloc[0] if not eq_vals.empty else None
+                        count = 1 if (not eq_vals.empty and value <= threshold) else 0
+                        table_rows.append([eq, value if value is not None else 0, 1, count])
+                    outdf = pd.DataFrame(table_rows, columns=["Equipment Name", "Deviation", "No. of Days", threshold_label])
                 else:
-                    # Rank all by avg deviation in range
                     for eq in equipment_names:
                         eq_df = df[df["input_name"] == eq]
-                        if not eq_df.empty:
-                            avg_dev = eq_df["value"].mean()
-                            days = eq_df["date"].nunique()
-                            table_rows.append([eq, avg_dev, days])
-                    outdf = pd.DataFrame(table_rows, columns=["Equipment Name", "Deviation", "No. of Days"])
+                        avg_dev = eq_df["value"].mean() if not eq_df.empty else 0
+                        n_days = eq_df["date"].nunique()
+                        count = (eq_df["value"] <= threshold).sum() if not eq_df.empty else 0
+                        table_rows.append([eq, avg_dev, n_days, count])
+                    outdf = pd.DataFrame(table_rows, columns=["Equipment Name", "Deviation", "No. of Days", threshold_label])
 
-                # --- SORT: most negative (worst) at top, most positive (best) at bottom ---
+                # Add Rank column (by Deviation: most negative = rank 1)
                 outdf = outdf.sort_values("Deviation", ascending=True).reset_index(drop=True)
                 outdf["Rank"] = outdf.index + 1
                 outdf["Deviation"] = outdf["Deviation"].map(lambda x: f"{x:.2f}%" if pd.notnull(x) else "-")
+                outdf[threshold_label] = outdf[threshold_label].astype(int).fillna(0)
 
                 st.markdown("### 🌟 Equipment-wise Deviation Ranking")
                 st.dataframe(outdf, use_container_width=True)
 
                 # --- Bar Plot with Colors ---
-                dev_numeric = [float(x.replace('%','')) for x in outdf["Deviation"] if x != "-"]
+                dev_numeric = [float(str(x).replace('%','')) for x in outdf["Deviation"] if x not in ["-", None]]
                 equipment_names = outdf["Equipment Name"].tolist()
 
                 bar_colors = []
@@ -297,8 +302,9 @@ with tab2:
                     total_input_cells = plant_df['value'].notnull().sum()
                     inputs_deviated = (plant_df['value'] <= threshold).sum()
                     norm_deviation = 100 * inputs_deviated / total_input_cells if total_input_cells > 0 else 0
-                    rows.append([plant, norm_deviation])
-                ranked = pd.DataFrame(rows, columns=["Plant", "Normalised Deviation (%)"])
+                    rows.append([plant, norm_deviation, inputs_deviated])
+                ranked = pd.DataFrame(rows, columns=["Plant", "Normalised Deviation (%)", f"No. of Inputs ≤ {threshold}%"])
+
                 # ABS ranking (lowest abs = greenest, highest abs = reddest)
                 ranked["AbsDeviation"] = ranked["Normalised Deviation (%)"].abs()
                 ranked = ranked.sort_values("AbsDeviation").reset_index(drop=True)
