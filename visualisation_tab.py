@@ -167,93 +167,116 @@ def render_visualisation_tab(plant_select, date_start, date_end, threshold):
             if plant_df.empty:
                 st.info("No equipment data for selected plant and range.")
             else:
-                # --- Bar Chart: Equipment avg deviation, colored by sign ---
-                equip_metrics = (
-                    plant_df.groupby("input_name")["value"]
-                    .mean()
-                    .reset_index(name="Avg Deviation")
-                )
-                colors = ['red' if v < 0 else 'green' for v in equip_metrics["Avg Deviation"]]
-                fig = go.Figure(go.Bar(
-                    x=equip_metrics["input_name"],
-                    y=equip_metrics["Avg Deviation"],
-                    marker_color=colors,
-                    text=[f"{v:.2f}" for v in equip_metrics["Avg Deviation"]],
-                    textposition='outside'
-                ))
-                fig.add_hline(y=0, line_dash="dash", line_color="black")
-                fig.update_layout(
-                    title=f"Avg Deviation by Equipment ({plant_select[0]})",
-                    xaxis_title="Equipment", yaxis_title="Avg Deviation (%)",
+                # --- 3-Color Bar Chart: Equipment avg deviation ---
+                threshold_value = float(threshold)  # Ensure numeric for color logic
+
+            def get_bar_color(val):
+                if val >= 0:
+                    return "green"
+                elif val < threshold_value:
+                    return "red"
+                else:
+                    return "orange"
+
+            equip_metrics = (
+                plant_df.groupby("input_name")["value"]
+                .mean()
+                .reset_index(name="Avg Deviation")
+            )
+            colors = [get_bar_color(v) for v in equip_metrics["Avg Deviation"]]
+
+            # Legend as markdown above chart
+            st.markdown(
+                f"<b>Bar color legend:</b> "
+                f"<span style='color:green'>Green</span>: ≥ 0% &nbsp;&nbsp;"
+                f"<span style='color:orange'>Orange</span>: 0% to {threshold_value}% &nbsp;&nbsp;"
+                f"<span style='color:red'>Red</span>: &lt; {threshold_value}%",
+                unsafe_allow_html=True
+            )
+
+            fig = go.Figure(go.Bar(
+                x=equip_metrics["input_name"],
+                y=equip_metrics["Avg Deviation"],
+                marker_color=colors,
+                text=[f"{v:.2f}" for v in equip_metrics["Avg Deviation"]],
+                textposition='outside'
+            ))
+            fig.add_hline(y=0, line_dash="dash", line_color="black")
+            fig.add_hline(y=threshold_value, line_dash="dot", line_color="red")
+            fig.update_layout(
+                title=f"Avg Deviation by Equipment ({plant_select[0]})",
+                xaxis_title="Equipment",
+                yaxis_title="Avg Deviation (%)",
+                plot_bgcolor='white',
+                height=500
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            # --- Trend for multiple selected equipment ---
+            equipment_options = equip_metrics["input_name"].tolist()
+            selected_equipment = st.multiselect(
+                "Show Trend for Equipment (select one or more to compare)",
+                equipment_options,
+                key="multi_trend_eq_select"
+            )
+            if selected_equipment:
+                trend_fig = go.Figure()
+                color_palette = [
+                    "#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#46f0f0",
+                    "#f032e6", "#bcf60c", "#fabebe", "#008080", "#e6beff", "#9a6324", "#fffac8",
+                    "#800000", "#aaffc3", "#808000", "#ffd8b1", "#000075", "#808080"
+                ]
+                for idx, eq in enumerate(selected_equipment):
+                    eq_trend_df = plant_df[plant_df["input_name"] == eq].sort_values("date")
+                    trend_fig.add_trace(go.Scatter(
+                        x=eq_trend_df["date"],
+                        y=eq_trend_df["value"],
+                        mode='lines+markers',
+                        name=eq,
+                        line=dict(color=color_palette[idx % len(color_palette)], width=2),
+                        marker=dict(size=7)
+                    ))
+                trend_fig.add_hline(y=0, line_dash="dash", line_color="black")
+                trend_fig.update_layout(
+                    title="Deviation Trend by Equipment",
+                    xaxis_title="Date", yaxis_title="Deviation (%)",
                     plot_bgcolor='white'
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(trend_fig, use_container_width=True)
 
-                # --- Trend for multiple selected equipment ---
-                equipment_options = equip_metrics["input_name"].tolist()
-                selected_equipment = st.multiselect(
-                    "Show Trend for Equipment (select one or more to compare)",
-                    equipment_options,
-                    key="multi_trend_eq_select"
-                )
-                if selected_equipment:
-                    trend_fig = go.Figure()
-                    color_palette = [
-                        "#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#46f0f0",
-                        "#f032e6", "#bcf60c", "#fabebe", "#008080", "#e6beff", "#9a6324", "#fffac8",
-                        "#800000", "#aaffc3", "#808000", "#ffd8b1", "#000075", "#808080"
-                    ]
-                    for idx, eq in enumerate(selected_equipment):
-                        eq_trend_df = plant_df[plant_df["input_name"] == eq].sort_values("date")
-                        trend_fig.add_trace(go.Scatter(
-                            x=eq_trend_df["date"],
-                            y=eq_trend_df["value"],
-                            mode='lines+markers',
-                            name=eq,
-                            line=dict(color=color_palette[idx % len(color_palette)], width=2),
-                            marker=dict(size=7)
-                        ))
-                    trend_fig.add_hline(y=0, line_dash="dash", line_color="black")
-                    trend_fig.update_layout(
-                        title="Deviation Trend by Equipment",
-                        xaxis_title="Date", yaxis_title="Deviation (%)",
-                        plot_bgcolor='white'
-                    )
-                    st.plotly_chart(trend_fig, use_container_width=True)
+            # --- Tag Reason/Comment for Equipment Underperformance (unchanged) ---
+            st.markdown("**Tag Reason/Comment for Equipment Underperformance**")
+            underperf_equip = plant_df[plant_df["value"] <= threshold_value]["input_name"].unique()
+            selected_equip = st.multiselect("Select Equipment", underperf_equip.tolist(), key="multi_equip")
+            reason_list = ["Soiling", "Inverter Fault", "Shadow", "Other"]
+            reason = st.selectbox("Reason", reason_list, key="reason_box")
+            custom_reason = ""
+            if reason == "Other":
+                custom_reason = st.text_input("Custom Reason", key="custom_reason")
+            comment = st.text_area("Comment (optional)", key="comment_box")
+            if st.button("Add Reason/Comment", key="add_reason"):
+                with duckdb.connect(DB_PATH) as con:
+                    for equip in selected_equip:
+                        value = float(plant_df[(plant_df["input_name"] == equip)]["value"].iloc[-1])
+                        con.execute(f"""
+                            INSERT INTO {REASON_TABLE}
+                            (plant, date, input_name, value, reason, comment)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        """, (plant_select[0], date_end, equip, value,
+                              custom_reason if reason == "Other" else reason, comment))
+                st.success("Reason(s) logged!")
 
-                # --- Tag Reason/Comment for Equipment Underperformance (unchanged) ---
-                st.markdown("**Tag Reason/Comment for Equipment Underperformance**")
-                underperf_equip = plant_df[plant_df["value"] <= threshold]["input_name"].unique()
-                selected_equip = st.multiselect("Select Equipment", underperf_equip.tolist(), key="multi_equip")
-                reason_list = ["Soiling", "Inverter Fault", "Shadow", "Other"]
-                reason = st.selectbox("Reason", reason_list, key="reason_box")
-                custom_reason = ""
-                if reason == "Other":
-                    custom_reason = st.text_input("Custom Reason", key="custom_reason")
-                comment = st.text_area("Comment (optional)", key="comment_box")
-                if st.button("Add Reason/Comment", key="add_reason"):
-                    with duckdb.connect(DB_PATH) as con:
-                        for equip in selected_equip:
-                            value = float(plant_df[(plant_df["input_name"] == equip)]["value"].iloc[-1])
-                            con.execute(f"""
-                                INSERT INTO {REASON_TABLE}
-                                (plant, date, input_name, value, reason, comment)
-                                VALUES (?, ?, ?, ?, ?, ?)
-                            """, (plant_select[0], date_end, equip, value,
-                                  custom_reason if reason == "Other" else reason, comment))
-                    st.success("Reason(s) logged!")
-
-                # --- Pie chart of all reasons for this plant's equipment ---
-                if not reason_df.empty:
-                    plant_reason_df = reason_df[reason_df["plant"] == plant_select[0]]
-                    if not plant_reason_df.empty:
-                        reason_count = plant_reason_df["reason"].value_counts().reset_index()
-                        reason_count.columns = ["Reason", "Count"]
-                        pie = go.Figure(go.Pie(
-                            labels=reason_count["Reason"], values=reason_count["Count"], hole=0.4
-                        ))
-                        pie.update_layout(title=f"Distribution of Reasons for {plant_select[0]}")
-                        st.plotly_chart(pie, use_container_width=True)
+            # --- Pie chart of all reasons for this plant's equipment ---
+            if not reason_df.empty:
+                plant_reason_df = reason_df[reason_df["plant"] == plant_select[0]]
+                if not plant_reason_df.empty:
+                    reason_count = plant_reason_df["reason"].value_counts().reset_index()
+                    reason_count.columns = ["Reason", "Count"]
+                    pie = go.Figure(go.Pie(
+                        labels=reason_count["Reason"], values=reason_count["Count"], hole=0.4
+                    ))
+                    pie.update_layout(title=f"Distribution of Reasons for {plant_select[0]}")
+                    st.plotly_chart(pie, use_container_width=True)
 
 
 
