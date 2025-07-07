@@ -6,13 +6,15 @@ import base64
 import matplotlib
 import numpy as np
 
+from visualisation_tab import render_visualisation_tab  # <-- import the modular tab
+
 DB_PATH = "dgr_data.duckdb"
 TABLE_NAME = "dgr_data"
 MAPPING_SHEET = "Mapping Sheet.xlsx"
 
 st.set_page_config(page_title="DGR Deviation Dashboard", layout="wide")
 
-# ------ WATERMARK LOGO BACKGROUND (centered, before UI) ------
+# ------ WATERMARK LOGO BACKGROUND ------
 def get_base64_of_bin_file(bin_file):
     with open(bin_file, 'rb') as f:
         data = f.read()
@@ -20,7 +22,6 @@ def get_base64_of_bin_file(bin_file):
 
 img_path = "JSW-Energy-completes-acquisition-of-4.7-GW-renewable-energy-platform-from-O2-Power.jpg"
 img_base64 = get_base64_of_bin_file(img_path)
-
 background_css = f"""
 <style>
 [data-testid="stAppViewContainer"] > .main::before {{
@@ -76,6 +77,7 @@ if "threshold" not in st.session_state:
 threshold = st.number_input("Deviation Threshold (e.g., -3 means ≤ -3%)",
                             value=st.session_state["threshold"], step=0.1, key="threshold")
 
+# --- Date Range ---
 with duckdb.connect(DB_PATH) as con:
     date_query = f"""
         SELECT DISTINCT date FROM {TABLE_NAME}
@@ -102,8 +104,9 @@ else:
     st.warning("No data found in the database for selected plants.")
     st.stop()
 
-tab1, tab2 = st.tabs(["Generate Table", "Generate Ranking"])
+tab1, tab2, tab3 = st.tabs(["Generate Table", "Generate Ranking", "Visualisation"])
 
+# --- TAB 1: GENERATE TABLE ---
 with tab1:
     if st.button("Generate Table"):
         with st.spinner("Processing..."):
@@ -123,7 +126,6 @@ with tab1:
 
             threshold_label = f"No. of days ≤ {threshold}%"
 
-            # --- SINGLE PLANT MODE ---
             if len(plant_select) == 1:
                 plant_name = plant_select[0]
                 mapping_row = mapping_df[mapping_df["Plant_Name"] == plant_name].iloc[0]
@@ -172,8 +174,6 @@ with tab1:
                 else:
                     st.markdown("### Equipment-wise Deviation Table")
                     st.dataframe(outdf, use_container_width=True)
-
-            # --- MULTI-PLANT MODE ---
             else:
                 rows = []
                 serial = 1
@@ -190,7 +190,7 @@ with tab1:
                         inputs_deviated,
                         total_input_cells,
                         f"{norm_deviation:.2f}%",
-                        inputs_deviated   # This is "No. of Inputs ≤ threshold"
+                        inputs_deviated
                     ])
                     serial += 1
                 outdf = pd.DataFrame(rows, columns=[
@@ -202,6 +202,7 @@ with tab1:
                     st.markdown("### Plant-wise Deviation Summary")
                     st.dataframe(outdf, use_container_width=True)
 
+# --- TAB 2: GENERATE RANKING ---
 with tab2:
     if st.button("Generate Ranking"):
         with st.spinner("Ranking..."):
@@ -219,7 +220,6 @@ with tab2:
                 st.warning("No data found in selected range.")
                 st.stop()
 
-            # ---- EQUIPMENT-WISE RANKING FOR SINGLE PLANT ----
             if len(plant_select) == 1:
                 plant_name = plant_select[0]
                 equipment_names = df["input_name"].unique().tolist()
@@ -242,7 +242,6 @@ with tab2:
                         table_rows.append([eq, avg_dev, n_days, count])
                     outdf = pd.DataFrame(table_rows, columns=["Equipment Name", "Deviation", "No. of Days", threshold_label])
 
-                # Add Rank column (by Deviation: most negative = rank 1)
                 outdf = outdf.sort_values("Deviation", ascending=True).reset_index(drop=True)
                 outdf["Rank"] = outdf.index + 1
                 outdf["Deviation"] = outdf["Deviation"].map(lambda x: f"{x:.2f}%" if pd.notnull(x) else "-")
@@ -251,7 +250,6 @@ with tab2:
                 st.markdown("### 🌟 Equipment-wise Deviation Ranking")
                 st.dataframe(outdf, use_container_width=True)
 
-                # --- Bar Plot with Colors ---
                 dev_numeric = [float(str(x).replace('%','')) for x in outdf["Deviation"] if x not in ["-", None]]
                 equipment_names = outdf["Equipment Name"].tolist()
 
@@ -281,7 +279,7 @@ with tab2:
                     insidetextanchor='end',
                     hovertemplate="Equipment: %{y}<br>Deviation: %{x:.2f}%<extra></extra>"
                 ))
-                fig.update_yaxes(autorange="reversed")  # Top = most negative
+                fig.update_yaxes(autorange="reversed")
                 fig.update_layout(
                     title="🏆 Equipment Ranking by Deviation (Red = Worst, Green = Best)",
                     xaxis_title="Deviation (%)",
@@ -294,7 +292,6 @@ with tab2:
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-            # ---- PLANT-WISE RANKING FOR MULTI-PLANT ----
             else:
                 rows = []
                 for plant in df['plant'].unique():
@@ -305,7 +302,6 @@ with tab2:
                     rows.append([plant, norm_deviation, inputs_deviated])
                 ranked = pd.DataFrame(rows, columns=["Plant", "Normalised Deviation (%)", f"No. of Inputs ≤ {threshold}%"])
 
-                # ABS ranking (lowest abs = greenest, highest abs = reddest)
                 ranked["AbsDeviation"] = ranked["Normalised Deviation (%)"].abs()
                 ranked = ranked.sort_values("AbsDeviation").reset_index(drop=True)
                 ranked['Rank'] = ranked.index + 1
@@ -349,3 +345,7 @@ with tab2:
                     height=100 + 60 * len(ranked),
                 )
                 st.plotly_chart(fig, use_container_width=True)
+
+# --- TAB 3: VISUALISATION ---
+with tab3:
+    render_visualisation_tab(plant_select, date_start, date_end, threshold)
