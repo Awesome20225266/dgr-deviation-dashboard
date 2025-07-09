@@ -27,6 +27,8 @@ REASON_COLOR = {
 }
 
 def render_visualisation_tab(plant_select, date_start, date_end, threshold):
+    global REASON_LIST
+
     # --- 1. Initialize session state (must be before widget definition!) ---
     for key, default in [
         ("reason_main_select", REASON_LIST[0]),
