@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import duckdb
@@ -767,6 +768,8 @@ with tab4:
     # ... (use your existing code for visual fault map, log, etc. The key thing is ALL upstream logic is now uniform.)
 
 
+    import plotly.express as px
+
     # ---- Visual Fault Map ----
     st.markdown("---")
     st.markdown("#### 📅 Visual Fault Map")
@@ -775,7 +778,7 @@ with tab4:
             SELECT plant, date, input_name, deviation, reason, comment, fault_start_date, fault_end_date, timestamp
             FROM deviation_reasons
             WHERE plant IN ({','.join(['?'] * len(portfolio_plants))})
-              AND CAST(date AS DATE) BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
+            AND CAST(date AS DATE) BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
         """
         fault_params = portfolio_plants + [portfolio_date_start, portfolio_date_end]
         fault_df = con.execute(fault_query, fault_params).df()
@@ -785,12 +788,17 @@ with tab4:
     else:
         fault_df['Label'] = fault_df.apply(lambda r: f"{r['plant']}_{r['input_name']}", axis=1)
         fault_df['Date'] = pd.to_datetime(fault_df['date'])
-        reason_colors = {r: f"#{np.random.randint(0, 0xFFFFFF):06x}" for r in fault_df['reason'].unique()}
+
+        # Assign a unique color for each distinct reason
+        unique_reasons = fault_df['reason'].unique().tolist()
+        color_seq = px.colors.qualitative.Safe  # or 'Plotly', 'Bold', etc.
+        color_map = {reason: color_seq[i % len(color_seq)] for i, reason in enumerate(unique_reasons)}
+
         scatter_x, scatter_y, scatter_color, scatter_text = [], [], [], []
         for _, row in fault_df.iterrows():
             scatter_x.append(row['Date'])
             scatter_y.append(row['Label'])
-            scatter_color.append(reason_colors[row['reason']])
+            scatter_color.append(color_map[row['reason']])
             scatter_text.append(
                 f"Date: {row['Date'].date()}<br>Plant: {row['plant']}<br>Equipment: {row['input_name']}<br>Deviation: {row['deviation']:.2f}%<br>Reason: {row['reason']}<br>Comment: {row['comment']}"
             )
@@ -810,6 +818,13 @@ with tab4:
             height=400 + len(fault_df['Label'].unique()) * 10
         )
         st.plotly_chart(fault_fig, use_container_width=True)
+
+        # --- Dynamic Legend ---
+        legend_html = ""
+        for reason in unique_reasons:
+            color = color_map[reason]
+            legend_html += f"<span style='color:{color}; font-size:22px'>&#11044;</span> {reason}&nbsp;&nbsp;&nbsp;"
+        st.markdown("**Legend:**<br>" + legend_html, unsafe_allow_html=True)
 
     # ---- Editable Log Table ----
     st.markdown("#### 📝 Reason/Comment Log (Editable & Downloadable)")

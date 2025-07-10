@@ -195,306 +195,352 @@ def render_visualisation_tab(plant_select, date_start, date_end, threshold):
             else:
                 st.info("Please select at least one plant and a valid date range.")
 
-    # ----------- Equipment Drilldown Tab -----------
-    with tabs[1]:
-        if len(plant_select) != 1:
-            st.info("Please select exactly one plant to view equipment drilldown.")
-            return
+        # ----------- Equipment Drilldown Tab -----------
+        with tabs[1]:
+            if len(plant_select) != 1:
+                st.info("Please select exactly one plant to view equipment drilldown.")
+                return
 
-        st.subheader(f"Equipment Drilldown: {plant_select[0]}")
-        plant_df = perf_df[perf_df["plant"] == plant_select[0]]
-        if plant_df.empty:
-            st.info("No equipment data for selected plant and range.")
-            return
+            st.subheader(f"Equipment Drilldown: {plant_select[0]}")
+            plant_df = perf_df[perf_df["plant"] == plant_select[0]]
+            if plant_df.empty:
+                st.info("No equipment data for selected plant and range.")
+                return
 
-        threshold_value = float(threshold)
-        def get_bar_color(val):
-            if val >= 0:
-                return "green"
-            elif val < threshold_value:
-                return "red"
-            else:
-                return "orange"
-        equip_metrics = (
-            plant_df.groupby("input_name")["value"]
-            .mean()
-            .reset_index(name="Avg Deviation")
-        )
-        colors = [get_bar_color(v) for v in equip_metrics["Avg Deviation"]]
-
-        st.markdown(
-            f"<b>Bar color legend:</b> "
-            f"<span style='color:green'>Green</span>: ≥ 0% &nbsp;&nbsp;"
-            f"<span style='color:orange'>Orange</span>: 0% to {threshold_value}% &nbsp;&nbsp;"
-            f"<span style='color:red'>Red</span>: &lt; {threshold_value}%",
-            unsafe_allow_html=True
-        )
-
-        fig = go.Figure(go.Bar(
-            x=equip_metrics["input_name"],
-            y=equip_metrics["Avg Deviation"],
-            marker_color=colors,
-            text=[f"{v:.2f}" for v in equip_metrics["Avg Deviation"]],
-            textposition='outside'
-        ))
-        fig.add_hline(y=0, line_dash="dash", line_color="black")
-        fig.add_hline(y=threshold_value, line_dash="dot", line_color="red")
-        fig.update_layout(
-            title=f"Avg Deviation by Equipment ({plant_select[0]})",
-            xaxis_title="Equipment",
-            yaxis_title="Avg Deviation (%)",
-            plot_bgcolor='white',
-            height=500
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-        # --- Emoji color-coded dropdown for equipment selection ---
-        def emoji_label(row):
-            v = row['Avg Deviation']
-            if v >= 0:
-                return f"🟩 {row['input_name']} ({v:.2f}%)"
-            elif v < threshold_value:
-                return f"🟥 {row['input_name']} ({v:.2f}%)"
-            else:
-                return f"🟧 {row['input_name']} ({v:.2f}%)"
-        equip_metrics['emoji_label'] = equip_metrics.apply(emoji_label, axis=1)
-        emoji_to_name = dict(zip(equip_metrics['emoji_label'], equip_metrics['input_name']))
-
-        selected_equipment = st.multiselect(
-            "Show Trend for Equipment (select one or more to compare)",
-            equip_metrics['emoji_label'].tolist(),
-            key="multi_trend_eq_select"
-        )
-        selected_equipment_names = [emoji_to_name[label] for label in selected_equipment]
-
-        if selected_equipment_names:
-            trend_fig = go.Figure()
-            color_palette = [
-                "#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#46f0f0",
-                "#f032e6", "#bcf60c", "#fabebe", "#008080", "#e6beff", "#9a6324", "#fffac8",
-                "#800000", "#aaffc3", "#808000", "#ffd8b1", "#000075", "#808080"
-            ]
-            for idx, eq in enumerate(selected_equipment_names):
-                eq_trend_df = plant_df[plant_df["input_name"] == eq].sort_values("date")
-                trend_fig.add_trace(go.Scatter(
-                    x=eq_trend_df["date"],
-                    y=eq_trend_df["value"],
-                    mode='lines+markers',
-                    name=eq,
-                    line=dict(color=color_palette[idx % len(color_palette)], width=2),
-                    marker=dict(size=7)
-                ))
-            trend_fig.add_hline(y=0, line_dash="dash", line_color="black")
-            trend_fig.update_layout(
-                title="Deviation Trend by Equipment",
-                xaxis_title="Date", yaxis_title="Deviation (%)",
-                plot_bgcolor='white'
+            threshold_value = float(threshold)
+            def get_bar_color(val):
+                if val >= 0:
+                    return "green"
+                elif val < threshold_value:
+                    return "red"
+                else:
+                    return "orange"
+            equip_metrics = (
+                plant_df.groupby("input_name")["value"]
+                .mean()
+                .reset_index(name="Avg Deviation")
             )
-            st.plotly_chart(trend_fig, use_container_width=True)
+            colors = [get_bar_color(v) for v in equip_metrics["Avg Deviation"]]
 
-        # ------- Tag Reason/Comment Section -------
-        st.markdown("---")
-        st.markdown("### 🏷️ Tag Reason/Comment for Equipment Underperformance")
-        eq_dropdown_options = [f"🌐 Whole Plant"] + list(equip_metrics['emoji_label'])
-        selected_label = st.selectbox("Select Equipment (with status badge)", eq_dropdown_options, key="reason_equip_select")
-        if selected_label.startswith("🌐"):
-            selected_eq = "Whole Plant"
-        else:
-            selected_eq = selected_label.split(' ', 1)[1].split(' (')[0]
-        reason = st.selectbox("Select Reason*", REASON_LIST, key="reason_main_select")
-        if reason == "Others":
-            custom_reason = st.text_input("Custom Reason*", key="custom_reason_box")
-        else:
-            custom_reason = ""
-        comment = st.text_area("Comment (Action/Status)*", placeholder="E.g. Issue resolved, cleaning scheduled, replacement pending...", key="reason_comment_box")
-        submit_disabled = (
-            (not selected_eq)
-            or (reason == "Others" and not custom_reason.strip())
-            or (reason != "Others" and not reason)
-            or (not comment.strip())
-        )
-        if st.button("Submit Reason/Comment", disabled=submit_disabled):
-            with duckdb.connect(DB_PATH) as con:
-                con.execute(
-                    f"""INSERT INTO {REASON_TABLE}
-                    (plant, date, input_name, reason, comment, timestamp)
-                    VALUES (?, ?, ?, ?, ?, ?)""",
-                    (
-                        plant_select[0],
-                        str(date_end),
-                        selected_eq,
-                        custom_reason.strip() if reason == "Others" else reason,
-                        comment.strip(),
-                        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    )
-                )
-            st.success(f"Reason/comment tagged for {selected_eq} on {date_end}.")
-            st.rerun()
-
-        # ---- Reason/Comment Activity Matrix ----
-        st.markdown("#### 📅 Reason/Comment Activity Matrix")
-        date_start_str = str(date_start)
-        date_end_str = str(date_end)
-        with duckdb.connect(DB_PATH) as con:
-            query = f"""
-                SELECT plant, date, input_name, reason, comment, timestamp
-                FROM {REASON_TABLE}
-                WHERE plant = ? 
-                  AND CAST(date AS DATE) BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
-            """
-            matrix_df = con.execute(query, (plant_select[0], date_start_str, date_end_str)).df()
-
-        if not matrix_df.empty:
-            equipment_list = sorted(matrix_df['input_name'].unique())
-            date_list = sorted(matrix_df['date'].unique())
-            reason_map = {r: REASON_COLOR.get(r, "#888") for r in matrix_df['reason'].unique()}
-            scatter_x, scatter_y, scatter_color, scatter_text = [], [], [], []
-            for idx, equip in enumerate(equipment_list):
-                for jdx, d in enumerate(date_list):
-                    sel = matrix_df[(matrix_df['input_name'] == equip) & (matrix_df['date'] == d)]
-                    if not sel.empty:
-                        row = sel.iloc[-1]  # Latest only
-                        scatter_x.append(d)
-                        scatter_y.append(equip)
-                        scatter_color.append(REASON_COLOR.get(row['reason'], "#888"))
-                        scatter_text.append(
-                            f"Date: {d}<br>Equipment: {equip}<br>Reason: {row['reason']}<br>Comment: {row['comment']}"
-                        )
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=scatter_x,
-                y=scatter_y,
-                mode="markers",
-                marker=dict(
-                    color=scatter_color,
-                    size=22,
-                    line=dict(width=2, color="#333"),
-                    symbol='circle'
-                ),
-                text=scatter_text,
-                hoverinfo="text"
-            ))
-            fig.update_xaxes(
-                title="Date",
-                type="category",
-                showgrid=True,
-                gridwidth=1, gridcolor='#ccc',
-                tickangle=45
-            )
-            fig.update_yaxes(
-                title="Equipment",
-                type="category",
-                showgrid=True,
-                gridwidth=1, gridcolor='#ccc'
-            )
-            legend_items = []
-            for k, v in reason_map.items():
-                legend_items.append(f"<span style='color:{v}; font-weight:bold;'>&#11044;</span> {k}")
             st.markdown(
-                "**Legend:**<br>" + " &nbsp; ".join(legend_items),
+                f"<b>Bar color legend:</b> "
+                f"<span style='color:green'>Green</span>: ≥ 0% &nbsp;&nbsp;"
+                f"<span style='color:orange'>Orange</span>: 0% to {threshold_value}% &nbsp;&nbsp;"
+                f"<span style='color:red'>Red</span>: &lt; {threshold_value}%",
                 unsafe_allow_html=True
             )
+
+            fig = go.Figure(go.Bar(
+                x=equip_metrics["input_name"],
+                y=equip_metrics["Avg Deviation"],
+                marker_color=colors,
+                text=[f"{v:.2f}" for v in equip_metrics["Avg Deviation"]],
+                textposition='outside'
+            ))
+            fig.add_hline(y=0, line_dash="dash", line_color="black")
+            fig.add_hline(y=threshold_value, line_dash="dot", line_color="red")
             fig.update_layout(
-                title="Reason/Comment Tag Activity",
+                title=f"Avg Deviation by Equipment ({plant_select[0]})",
+                xaxis_title="Equipment",
+                yaxis_title="Avg Deviation (%)",
                 plot_bgcolor='white',
-                margin=dict(l=40, r=20, t=45, b=45),
-                height=320 + 15 * len(equipment_list)
+                height=500
             )
             st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No tagged comments found for this plant and date range.")
 
-        # ---- Editable Table Log Below ----
-        st.markdown("#### 📝 Recent Reasons/Comments Log")
-        if not matrix_df.empty:
-            log_df = matrix_df.copy()
-            log_df = log_df.sort_values(["date", "timestamp"], ascending=[False, False])
-            for idx, row in log_df.iterrows():
-                with st.expander(f"{row['date']} | {row['input_name']} | {row['reason']}"):
-                    st.markdown(f"**Comment:** {row['comment']}")
-                    new_reason = st.selectbox("Edit Reason", REASON_LIST, index=REASON_LIST.index(row['reason']) if row['reason'] in REASON_LIST else len(REASON_LIST)-1, key=f"edit_reason_{idx}")
-                    custom_edit_reason = ""
-                    if new_reason == "Others":
-                        custom_edit_reason = st.text_input("Custom Reason", row['reason'] if row['reason'] not in REASON_LIST else "", key=f"edit_custom_{idx}")
-                    new_comment = st.text_area("Edit Comment", row['comment'], key=f"edit_comment_{idx}")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("Update", key=f"update_{idx}"):
-                            if not new_comment.strip() or (new_reason == "Others" and not custom_edit_reason.strip()):
-                                st.error("Reason and Comment are mandatory.")
+            # --- Emoji color-coded dropdown for equipment selection ---
+            def emoji_label(row):
+                v = row['Avg Deviation']
+                if v >= 0:
+                    return f"🟩 {row['input_name']} ({v:.2f}%)"
+                elif v < threshold_value:
+                    return f"🟥 {row['input_name']} ({v:.2f}%)"
+                else:
+                    return f"🟧 {row['input_name']} ({v:.2f}%)"
+            equip_metrics['emoji_label'] = equip_metrics.apply(emoji_label, axis=1)
+            emoji_to_name = dict(zip(equip_metrics['emoji_label'], equip_metrics['input_name']))
+
+            selected_equipment = st.multiselect(
+                "Show Trend for Equipment (select one or more to compare)",
+                equip_metrics['emoji_label'].tolist(),
+                key="multi_trend_eq_select"
+            )
+            selected_equipment_names = [emoji_to_name[label] for label in selected_equipment]
+
+            if selected_equipment_names:
+                trend_fig = go.Figure()
+                color_palette = [
+                    "#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#46f0f0",
+                    "#f032e6", "#bcf60c", "#fabebe", "#008080", "#e6beff", "#9a6324", "#fffac8",
+                    "#800000", "#aaffc3", "#808000", "#ffd8b1", "#000075", "#808080"
+                ]
+                for idx, eq in enumerate(selected_equipment_names):
+                    eq_trend_df = plant_df[plant_df["input_name"] == eq].sort_values("date")
+                    trend_fig.add_trace(go.Scatter(
+                        x=eq_trend_df["date"],
+                        y=eq_trend_df["value"],
+                        mode='lines+markers',
+                        name=eq,
+                        line=dict(color=color_palette[idx % len(color_palette)], width=2),
+                        marker=dict(size=7)
+                    ))
+                trend_fig.add_hline(y=0, line_dash="dash", line_color="black")
+                trend_fig.update_layout(
+                    title="Deviation Trend by Equipment",
+                    xaxis_title="Date", yaxis_title="Deviation (%)",
+                    plot_bgcolor='white'
+                )
+                st.plotly_chart(trend_fig, use_container_width=True)
+
+            import datetime
+
+            st.markdown("---")
+            st.markdown("### 🏷️ Tag Reason/Comment for Equipment Underperformance")
+            eq_dropdown_options = [f"🌐 Whole Plant"] + list(equip_metrics['emoji_label'])
+            selected_label = st.selectbox("Select Equipment (with status badge)", eq_dropdown_options, key="reason_equip_select")
+            if selected_label.startswith("🌐"):
+                selected_eq = "Whole Plant"
+            else:
+                selected_eq = selected_label.split(' ', 1)[1].split(' (')[0]
+
+            reason = st.selectbox("Select Reason*", REASON_LIST, key="reason_main_select")
+            if reason == "Others":
+                custom_reason = st.text_input("Custom Reason*", key="custom_reason_box")
+            else:
+                custom_reason = ""
+
+            # ----- NEW: Unified Fault Date Range Picker -----
+            fault_date_range = st.date_input(
+                "Fault Date Range",
+                value=(date_start, date_end),   # You can use any default range, e.g. the analysis range
+                key="fault_date_range"
+            )
+            fault_start_date, fault_end_date = fault_date_range
+
+            comment = st.text_area(
+                "Comment (Action/Status)*",
+                placeholder="E.g. Issue resolved, cleaning scheduled, replacement pending...",
+                key="reason_comment_box"
+            )
+
+            submit_disabled = (
+                (not selected_eq)
+                or (reason == "Others" and not custom_reason.strip())
+                or (reason != "Others" and not reason)
+                or (not comment.strip())
+            )
+
+            if st.button("Submit Reason/Comment", disabled=submit_disabled):
+                if fault_end_date < fault_start_date:
+                    st.error("End date cannot be before start date.")
+                else:
+                    reason_to_store = custom_reason.strip() if reason == "Others" else reason
+                    insert_count = 0
+                    with duckdb.connect(DB_PATH) as con:
+                        for d in range((fault_end_date - fault_start_date).days + 1):
+                            tag_date = (fault_start_date + datetime.timedelta(days=d)).strftime("%Y-%m-%d")
+                            # Fetch deviation value from the correct table
+                            if selected_eq != "Whole Plant":
+                                dev_query = """
+                                    SELECT value FROM dgr_data
+                                    WHERE plant = ? AND input_name = ? AND date = ?
+                                    LIMIT 1
+                                """
+                                res = con.execute(dev_query, (plant_select[0], selected_eq, tag_date)).fetchone()
+                                deviation_val = res[0] if res is not None else None
                             else:
+                                dev_query = """
+                                    SELECT AVG(value) FROM dgr_data
+                                    WHERE plant = ? AND date = ?
+                                """
+                                res = con.execute(dev_query, (plant_select[0], tag_date)).fetchone()
+                                deviation_val = res[0] if res is not None else None
+                            # Insert including deviation
+                            con.execute(
+                                f"""INSERT INTO {REASON_TABLE}
+                                (plant, date, input_name, deviation, reason, comment, fault_start_date, fault_end_date, timestamp)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                (
+                                    plant_select[0],
+                                    tag_date,
+                                    selected_eq,
+                                    deviation_val,
+                                    reason_to_store,
+                                    comment.strip(),
+                                    fault_start_date.strftime("%Y-%m-%d"),
+                                    fault_end_date.strftime("%Y-%m-%d"),
+                                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                )
+                            )
+                            insert_count += 1
+                    st.success(f"Reason/comment tagged for {selected_eq} from {fault_start_date} to {fault_end_date} ({insert_count} days).")
+                    st.rerun()
+
+
+            # ---- Reason/Comment Activity Matrix ----
+            st.markdown("#### 📅 Reason/Comment Activity Matrix")
+            date_start_str = str(date_start)
+            date_end_str = str(date_end)
+            with duckdb.connect(DB_PATH) as con:
+                query = f"""
+                    SELECT plant, date, input_name, reason, comment, timestamp
+                    FROM {REASON_TABLE}
+                    WHERE plant = ? 
+                    AND CAST(date AS DATE) BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
+                """
+                matrix_df = con.execute(query, (plant_select[0], date_start_str, date_end_str)).df()
+
+            if not matrix_df.empty:
+                equipment_list = sorted(matrix_df['input_name'].unique())
+                date_list = sorted(matrix_df['date'].unique())
+                reason_map = {r: REASON_COLOR.get(r, "#888") for r in matrix_df['reason'].unique()}
+                scatter_x, scatter_y, scatter_color, scatter_text = [], [], [], []
+                for idx, equip in enumerate(equipment_list):
+                    for jdx, d in enumerate(date_list):
+                        sel = matrix_df[(matrix_df['input_name'] == equip) & (matrix_df['date'] == d)]
+                        if not sel.empty:
+                            row = sel.iloc[-1]  # Latest only
+                            scatter_x.append(d)
+                            scatter_y.append(equip)
+                            scatter_color.append(REASON_COLOR.get(row['reason'], "#888"))
+                            scatter_text.append(
+                                f"Date: {d}<br>Equipment: {equip}<br>Reason: {row['reason']}<br>Comment: {row['comment']}"
+                            )
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=scatter_x,
+                    y=scatter_y,
+                    mode="markers",
+                    marker=dict(
+                        color=scatter_color,
+                        size=22,
+                        line=dict(width=2, color="#333"),
+                        symbol='circle'
+                    ),
+                    text=scatter_text,
+                    hoverinfo="text"
+                ))
+                fig.update_xaxes(
+                    title="Date",
+                    type="category",
+                    showgrid=True,
+                    gridwidth=1, gridcolor='#ccc',
+                    tickangle=45
+                )
+                fig.update_yaxes(
+                    title="Equipment",
+                    type="category",
+                    showgrid=True,
+                    gridwidth=1, gridcolor='#ccc'
+                )
+                legend_items = []
+                for k, v in reason_map.items():
+                    legend_items.append(f"<span style='color:{v}; font-weight:bold;'>&#11044;</span> {k}")
+                st.markdown(
+                    "**Legend:**<br>" + " &nbsp; ".join(legend_items),
+                    unsafe_allow_html=True
+                )
+                fig.update_layout(
+                    title="Reason/Comment Tag Activity",
+                    plot_bgcolor='white',
+                    margin=dict(l=40, r=20, t=45, b=45),
+                    height=320 + 15 * len(equipment_list)
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No tagged comments found for this plant and date range.")
+
+            # ---- Editable Table Log Below ----
+            st.markdown("#### 📝 Recent Reasons/Comments Log")
+            if not matrix_df.empty:
+                log_df = matrix_df.copy()
+                log_df = log_df.sort_values(["date", "timestamp"], ascending=[False, False])
+                for idx, row in log_df.iterrows():
+                    with st.expander(f"{row['date']} | {row['input_name']} | {row['reason']}"):
+                        st.markdown(f"**Comment:** {row['comment']}")
+                        new_reason = st.selectbox("Edit Reason", REASON_LIST, index=REASON_LIST.index(row['reason']) if row['reason'] in REASON_LIST else len(REASON_LIST)-1, key=f"edit_reason_{idx}")
+                        custom_edit_reason = ""
+                        if new_reason == "Others":
+                            custom_edit_reason = st.text_input("Custom Reason", row['reason'] if row['reason'] not in REASON_LIST else "", key=f"edit_custom_{idx}")
+                        new_comment = st.text_area("Edit Comment", row['comment'], key=f"edit_comment_{idx}")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if st.button("Update", key=f"update_{idx}"):
+                                if not new_comment.strip() or (new_reason == "Others" and not custom_edit_reason.strip()):
+                                    st.error("Reason and Comment are mandatory.")
+                                else:
+                                    with duckdb.connect(DB_PATH) as con:
+                                        con.execute(f"""
+                                            UPDATE {REASON_TABLE}
+                                            SET reason=?, comment=?
+                                            WHERE plant=? AND date=? AND input_name=? AND timestamp=?
+                                        """, (
+                                            custom_edit_reason.strip() if new_reason == "Others" else new_reason,
+                                            new_comment.strip(),
+                                            row['plant'], row['date'], row['input_name'], row['timestamp']
+                                        ))
+                                    st.success("Updated!")
+                                    st.rerun()
+                        with col2:
+                            if st.button("Delete", key=f"delete_{idx}"):
+                                with duckdb.connect(DB_PATH) as con:
+                                    con.execute(f"""
+                                        DELETE FROM {REASON_TABLE}
+                                        WHERE plant=? AND date=? AND input_name=? AND timestamp=?
+                                    """, (row['plant'], row['date'], row['input_name'], row['timestamp']))
+                                st.success("Deleted!")
+                                st.rerun()
+                st.download_button(
+                    "Download Reason/Comment Log (CSV)",
+                    log_df[["date", "input_name", "reason", "comment", "timestamp"]].to_csv(index=False),
+                    "reason_log.csv",
+                    "text/csv"
+                )
+            else:
+                st.info("No log entries for this selection.")
+
+        # ----------- Root Cause Analytics Tab -----------
+        with tabs[2]:
+            st.subheader("Root Cause Analytics & Remarks Log")
+            if not reason_df.empty:
+                reason_count = reason_df["reason"].value_counts().reset_index()
+                reason_count.columns = ["Reason", "Count"]
+                pie = go.Figure(go.Pie(
+                    labels=reason_count["Reason"], values=reason_count["Count"], hole=0.4
+                ))
+                pie.update_layout(title="Distribution of Reasons for Underperformance")
+                st.plotly_chart(pie, use_container_width=True)
+            else:
+                st.info("No reason/comment data for selection.")
+
+            st.markdown("### Remarks Log (Edit/Delete)")
+            if not reason_df.empty:
+                for idx, row in reason_df.iterrows():
+                    with st.expander(f"{row['date']} | {row['input_name']} | {row['reason']}"):
+                        st.write(f"Deviation: {row.get('value', '')}%")
+                        new_reason = st.text_input("Edit Reason", row["reason"], key=f"reason_{idx}")
+                        new_comment = st.text_area("Edit Comment", row["comment"], key=f"comment_{idx}")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if st.button("Update", key=f"update_root_{idx}"):
                                 with duckdb.connect(DB_PATH) as con:
                                     con.execute(f"""
                                         UPDATE {REASON_TABLE}
                                         SET reason=?, comment=?
-                                        WHERE plant=? AND date=? AND input_name=? AND timestamp=?
-                                    """, (
-                                        custom_edit_reason.strip() if new_reason == "Others" else new_reason,
-                                        new_comment.strip(),
-                                        row['plant'], row['date'], row['input_name'], row['timestamp']
-                                    ))
+                                        WHERE plant=? AND date=? AND input_name=?
+                                    """, (new_reason, new_comment, row["plant"], row["date"], row["input_name"]))
                                 st.success("Updated!")
-                                st.rerun()
-                    with col2:
-                        if st.button("Delete", key=f"delete_{idx}"):
-                            with duckdb.connect(DB_PATH) as con:
-                                con.execute(f"""
-                                    DELETE FROM {REASON_TABLE}
-                                    WHERE plant=? AND date=? AND input_name=? AND timestamp=?
-                                """, (row['plant'], row['date'], row['input_name'], row['timestamp']))
-                            st.success("Deleted!")
-                            st.rerun()
-            st.download_button(
-                "Download Reason/Comment Log (CSV)",
-                log_df[["date", "input_name", "reason", "comment", "timestamp"]].to_csv(index=False),
-                "reason_log.csv",
-                "text/csv"
-            )
-        else:
-            st.info("No log entries for this selection.")
+                        with col2:
+                            if st.button("Delete", key=f"delete_root_{idx}"):
+                                with duckdb.connect(DB_PATH) as con:
+                                    con.execute(f"""
+                                        DELETE FROM {REASON_TABLE}
+                                        WHERE plant=? AND date=? AND input_name=?
+                                    """, (row["plant"], row["date"], row["input_name"]))
+                                st.success("Deleted!")
+            else:
+                st.info("No remarks to show.")
 
-    # ----------- Root Cause Analytics Tab -----------
-    with tabs[2]:
-        st.subheader("Root Cause Analytics & Remarks Log")
-        if not reason_df.empty:
-            reason_count = reason_df["reason"].value_counts().reset_index()
-            reason_count.columns = ["Reason", "Count"]
-            pie = go.Figure(go.Pie(
-                labels=reason_count["Reason"], values=reason_count["Count"], hole=0.4
-            ))
-            pie.update_layout(title="Distribution of Reasons for Underperformance")
-            st.plotly_chart(pie, use_container_width=True)
-        else:
-            st.info("No reason/comment data for selection.")
-
-        st.markdown("### Remarks Log (Edit/Delete)")
-        if not reason_df.empty:
-            for idx, row in reason_df.iterrows():
-                with st.expander(f"{row['date']} | {row['input_name']} | {row['reason']}"):
-                    st.write(f"Deviation: {row.get('value', '')}%")
-                    new_reason = st.text_input("Edit Reason", row["reason"], key=f"reason_{idx}")
-                    new_comment = st.text_area("Edit Comment", row["comment"], key=f"comment_{idx}")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("Update", key=f"update_root_{idx}"):
-                            with duckdb.connect(DB_PATH) as con:
-                                con.execute(f"""
-                                    UPDATE {REASON_TABLE}
-                                    SET reason=?, comment=?
-                                    WHERE plant=? AND date=? AND input_name=?
-                                """, (new_reason, new_comment, row["plant"], row["date"], row["input_name"]))
-                            st.success("Updated!")
-                    with col2:
-                        if st.button("Delete", key=f"delete_root_{idx}"):
-                            with duckdb.connect(DB_PATH) as con:
-                                con.execute(f"""
-                                    DELETE FROM {REASON_TABLE}
-                                    WHERE plant=? AND date=? AND input_name=?
-                                """, (row["plant"], row["date"], row["input_name"]))
-                            st.success("Deleted!")
-        else:
-            st.info("No remarks to show.")
-
-        if not reason_df.empty:
-            st.download_button("Download Remarks Log (Excel)",
-                               reason_df.to_csv(index=False), "remarks_log.csv", "text/csv")
+            if not reason_df.empty:
+                st.download_button("Download Remarks Log (Excel)",
+                                reason_df.to_csv(index=False), "remarks_log.csv", "text/csv")
