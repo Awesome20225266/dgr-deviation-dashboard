@@ -506,23 +506,30 @@ with tab4:
         f"<span style='color:{plant_color_map[plant]}; font-weight:bold;'>⬤</span> {plant} ({(avg_dev_df['plant'] == plant).sum()})"
         for plant in plant_list
     ]
+    legend_html = "<br>".join(legend_items)
     fig.update_layout(
         margin=dict(t=70, l=60, r=20, b=120),
         annotations=[
             dict(
-                text="<br>".join(legend_items),
+                text=legend_html,
                 align='left',
                 showarrow=False,
                 xref="paper", yref="paper",
-                x=1.01, y=1, xanchor='left', yanchor='top',
+                x=0.98, y=0.98,  # INSIDE the plot, near top-right
+                xanchor='right', yanchor='top',
                 bordercolor="#ccc",
                 borderwidth=1,
-                bgcolor="white"
+                bgcolor="white",
+                opacity=0.93,
+                font=dict(size=13)
             )
         ]
     )
 
+
     st.plotly_chart(fig, use_container_width=True)
+    legend_html = "<br>".join(legend_items)  # This should be defined as in your block above
+    st.markdown("**Legend:**<br>" + legend_html, unsafe_allow_html=True)
 
     # --- Download Button (same uniform logic) ---
     download_df = avg_dev_df.rename(columns={"plant": "Plant Name", "input_name": "Equipment Name"})
