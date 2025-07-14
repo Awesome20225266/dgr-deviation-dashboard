@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import duckdb
@@ -7,6 +6,14 @@ import base64
 import matplotlib
 import numpy as np
 from datetime import datetime
+# --- SUPABASE CLIENT SETUP ---
+from supabase import create_client, Client
+
+SUPABASE_URL = "https://ubkcxehguactwwcarkae.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVia2N4ZWhndWFjdHd3Y2Fya2FlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTIyMTU3OTYsImV4cCI6MjA2Nzc5MTc5Nn0.NPiJj_o-YervOE1dPxWRJhEI1fUwxT3Dptz-JszChLo"
+
+def get_supabase_client():
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 from visualisation_tab import render_visualisation_tab
 import io
@@ -18,15 +25,26 @@ def to_excel_bytes(df, reason_options):
         df.to_excel(writer, index=False, sheet_name='Deviation Data')
         workbook  = writer.book
         worksheet = writer.sheets['Deviation Data']
+        
+        # Write reason_options to a hidden column after the data
+        last_col = len(df.columns)  # 0-based index, next column index
+        reason_col_letter = chr(65 + last_col)  # e.g., if 3 cols (A-C), next is D
+        for i, reason in enumerate(reason_options, start=1):
+            worksheet.write(f'{reason_col_letter}{i}', reason)
+        
+        # Hide the reason column
+        worksheet.set_column(last_col, last_col, None, None, {'hidden': True})
+        
         # Find the "Reason" column index
         reason_col = df.columns.get_loc("Reason")
-        # Apply dropdown to all rows in Reason column (row 2 to N+1 in Excel)
+        
+        # Apply dropdown to all rows in Reason column (first_row=1 for data rows)
         worksheet.data_validation(
             first_row=1, first_col=reason_col,
             last_row=len(df), last_col=reason_col,
             options={
                 'validate': 'list',
-                'source': reason_options,
+                'source': f'=${reason_col_letter}$1:${reason_col_letter}${len(reason_options)}',
                 'input_message': 'Select a reason',
                 'error_message': 'Choose only from list'
             }
@@ -37,12 +55,6 @@ def to_excel_bytes(df, reason_options):
 DB_PATH = "dgr_data.duckdb"
 TABLE_NAME = "dgr_data"
 MAPPING_SHEET = "Mapping Sheet.xlsx"
-
-# -- Ensure deviation_reasons table has all columns
-with duckdb.connect(DB_PATH) as con:
-    con.execute("ALTER TABLE deviation_reasons ADD COLUMN IF NOT EXISTS deviation DOUBLE;")
-    con.execute("ALTER TABLE deviation_reasons ADD COLUMN IF NOT EXISTS fault_start_date TEXT;")
-    con.execute("ALTER TABLE deviation_reasons ADD COLUMN IF NOT EXISTS fault_end_date TEXT;")
 
 st.set_page_config(page_title="DGR Deviation Dashboard", layout="wide")
 
@@ -140,10 +152,10 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 ])
 REASON_OPTIONS = [
     "Soiling", "Shadow", "Disconnected String", "Connector Burn", "Fuse Failure", "IGBT Failure",
-        "Module Damage", "Power Clipping", "Vegetation Growth", "Bypass diode", "Degradation", "Temperature Loss",
-        "RISO Fault", "MPPT Malfunction", "Grid Outage", "Load Curtailment", "Efficiency loss", "Ground Fault",
-        "Module Mismatch", "IIGBT Issue", "Array Misalignment", "Tracker Failure", "Inverter Fan Issue",
-        "Bifacial factor Loss", "Power Limitation", "Others"
+    "Module Damage", "Power Clipping", "Vegetation Growth", "Bypass diode", "Degradation", "Temperature Loss",
+    "RISO Fault", "MPPT Malfunction", "Grid Outage", "Load Curtailment", "Efficiency loss", "Ground Fault",
+    "Module Mismatch", "IIGBT Issue", "Array Misalignment", "Tracker Failure", "Inverter Fan Issue",
+    "Bifacial factor Loss", "Power Limitation", "Others"
 ]
 # --- TAB 1: GENERATE TABLE ---
 with tab1:
@@ -390,10 +402,6 @@ with tab3:
     render_visualisation_tab(plant_select, date_start, date_end, threshold)
 
 # --- TAB 4: PORTFOLIO DEEP ANALYTICS ---
-# [Due to token limits, paste the full working Tab 4 code from my earlier responses here]
-
-# --- TAB 5: VISUAL SUMMARY ---
-# [Due to token limits, paste the full working Tab 5 code from my earlier responses here]
 from visualisation_tab import REASON_LIST
 
 import plotly.express as px
@@ -401,7 +409,6 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 from datetime import datetime
-import duckdb
 import streamlit as st
 
 with tab4:
@@ -485,20 +492,18 @@ with tab4:
     curr_x = 0
     for plant in plant_list:
         count = (avg_dev_df['plant'] == plant).sum()
-    # x0 = start bar index - 0.5, x1 = end bar index + 0.5 (no overlap)
         fig.add_vrect(
             x0=curr_x-0.5,
-            x1=curr_x+count-1+0.5,   # notice the -1!
+            x1=curr_x+count-1+0.5,
             fillcolor=plant_color_map[plant],
             opacity=0.08,
             line_width=0
-    )
+        )
         curr_x += count
-
 
     # Add custom legend
     legend_items = [
-        f"<span style='color:{plant_color_map[plant]}; font-weight:bold;'>&#11044;</span> {plant} ({(avg_dev_df['plant'] == plant).sum()})"
+        f"<span style='color:{plant_color_map[plant]}; font-weight:bold;'>⬤</span> {plant} ({(avg_dev_df['plant'] == plant).sum()})"
         for plant in plant_list
     ]
     fig.update_layout(
@@ -517,31 +522,9 @@ with tab4:
         ]
     )
 
-    
-    
-
-
-    fig.add_hline(y=0, line_dash="dash", line_color="black")
-    fig.add_hline(y=portfolio_threshold, line_dash="dot", line_color="red")
-    N = len(avg_dev_df)
-
-    fig.update_layout(
-        title="Equipment Deviation by Plant (Avg of All Days, Only < Threshold)",
-        xaxis_title="Equipment",
-        yaxis_title="Avg Deviation (%)",
-        barmode='group',
-        plot_bgcolor='white',
-        legend_title_text="Plant (Equipment Count)",
-        height=500,
-        xaxis_tickangle=-45 if N > 15 else 0,
-        bargap=0.05,
-        showlegend=True,
-    )
-
     st.plotly_chart(fig, use_container_width=True)
 
-    
-        # --- Download Button (same uniform logic) ---
+    # --- Download Button (same uniform logic) ---
     download_df = avg_dev_df.rename(columns={"plant": "Plant Name", "input_name": "Equipment Name"})
     download_df["Avg Deviation (%)"] = download_df["Avg Deviation (%)"].round(2)
     # Add empty columns for upload
@@ -558,11 +541,9 @@ with tab4:
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
-
-    # >>>>>>>>>>>>  PASTE THE NEW BULK UPLOAD CODE BELOW THIS LINE <<<<<<<<<<<<<
+    # Bulk Reason Upload
     import io
     import pandas as pd
-    import duckdb
     from datetime import datetime
 
     REASON_LIST = [
@@ -586,7 +567,7 @@ with tab4:
         - **Comment** (required)
     3. You can fill for any/all rows. Leave others blank.
     4. **Upload the same file** (xls, xlsx, csv) below.  
-        _Only rows with Reason and Comment will be processed. Timestamp is automatic._
+        _Only rows with Reason and Comment will be processed. Timestamp is automatic if not present._
 
         **Note:** For date range, all dates in range will be tagged in DB. If only Fault Start Date is filled, only that date will be tagged.
     """)
@@ -621,69 +602,90 @@ with tab4:
                     else:
                         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         n_added = 0
-                        with duckdb.connect(DB_PATH) as con:
-                            for idx, row in df_upload.iterrows():
-                                plant = row["Plant Name"]
-                                equip = row["Equipment Name"]
-                                deviation = row.get("Avg Deviation (%)", None)
-                                reason = str(row["Reason"]).strip()
-                                custom_reason = str(row.get("Custom Reason", "")).strip()
-                                comment = str(row["Comment"]).strip()
-                                start_date = str(row["Fault Start Date"]).strip()
-                                end_date = str(row["Fault End Date"]).strip() or start_date
-                                # Sanity: dates
-                                try:
-                                    dt_start = pd.to_datetime(start_date).date()
-                                    dt_end = pd.to_datetime(end_date).date() if end_date else dt_start
-                                except Exception:
-                                    st.warning(f"Date format error in row {idx+2} ({plant}/{equip}) – skipped.")
-                                    continue
-                                reason_final = custom_reason if reason.lower() == "others" and custom_reason else reason
-                                # For all dates in range
-                                for d in pd.date_range(dt_start, dt_end):
-                                    # DB dedup check: don't allow exact same record for same plant/equipment/date/reason/comment
-                                    exists = con.execute("""
-                                        SELECT COUNT(*) FROM deviation_reasons
-                                        WHERE plant=? AND input_name=? AND date=? AND reason=? AND comment=?
-                                    """, [plant, equip, str(d.date()), reason_final, comment]).fetchone()[0]
-                                    if exists == 0:
-                                        con.execute("""
-                                            INSERT INTO deviation_reasons 
-                                            (plant, date, input_name, deviation, reason, comment, timestamp, fault_start_date, fault_end_date)
-                                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                        """, [
-                                            plant, str(d.date()), equip,
-                                            deviation if not pd.isnull(deviation) else None,
-                                            reason_final, comment, now_str,
-                                            str(dt_start), str(dt_end)
-                                        ])
-                                        n_added += 1
+                        inserts = []
+                        supabase = get_supabase_client()
+                        for idx, row in df_upload.iterrows():
+                            plant = row["Plant Name"]
+                            equip = row["Equipment Name"]
+                            # deviation = row.get("Avg Deviation (%)", None)  # Not used, fetch daily
+                            reason = str(row["Reason"]).strip()
+                            custom_reason = str(row.get("Custom Reason", "")).strip()
+                            comment = str(row["Comment"]).strip()
+                            start_date = str(row["Fault Start Date"]).strip()
+                            end_date = str(row["Fault End Date"]).strip() or start_date
+                            # Sanity: dates
+                            try:
+                                dt_start = pd.to_datetime(start_date).date()
+                                dt_end = pd.to_datetime(end_date).date() if end_date else dt_start
+                            except Exception as e:
+                                st.warning(f"Date format error in row {idx+2} ({plant}/{equip}) – skipped.")
+                                continue
+                            reason_final = custom_reason if reason.lower() == "others" and custom_reason else reason
+                            # For all dates in range
+                            for d in pd.date_range(dt_start, dt_end):
+                                tag_date = d.strftime("%Y-%m-%d")
+                                # Fetch daily deviation
+                                with duckdb.connect(DB_PATH) as con:
+                                    dev_query = """
+                                        SELECT AVG(value) FROM dgr_data
+                                        WHERE plant = ? AND input_name = ? AND date = ?
+                                    """
+                                    res = con.execute(dev_query, (plant, equip, tag_date)).fetchone()
+                                    deviation_val = res[0] if res and res[0] is not None else 0.0
+                                # DB dedup check: don't allow exact same record for same plant/equipment/date/reason/comment
+                                match = supabase.table("deviation_reasons").select("count").eq("plant", plant).eq("input_name", equip).eq("date", tag_date).eq("reason", reason_final).eq("comment", comment).execute()
+                                exists = match.data[0]['count'] if match.data else 0
+                                if exists == 0:
+                                    inserts.append({
+                                        "plant": plant, "date": tag_date, "input_name": equip,
+                                        "deviation": deviation_val,
+                                        "reason": reason_final, "comment": comment, "timestamp": now_str,
+                                        "fault_start_date": str(dt_start), "fault_end_date": str(dt_end)
+                                    })
+                        # Batch insert with chunks
+                        chunk_size = 50
+                        for i in range(0, len(inserts), chunk_size):
+                            chunk = inserts[i:i+chunk_size]
+                            try:
+                                resp = supabase.table("deviation_reasons").insert(chunk).execute()
+                                n_added += len(resp.data)
+                                # Batch audit log for inserts
+                                audit_inserts = []
+                                for insert in chunk:
+                                    audit_inserts.append({
+                                        "action_type": "insert",
+                                        "record_id": None,  # Can be fetched if needed
+                                        "old_value": None,
+                                        "new_value": str(insert),
+                                        "timestamp": now_str
+                                    })
+                                supabase.table("reason_audit_log").insert(audit_inserts).execute()
+                            except Exception as e:
+                                st.error(f"Chunk insert failed: {e}")
                         st.success(f"✅ Uploaded and added {n_added} reason records!")
-                        st.experimental_rerun()
+                        st.rerun()
             except Exception as e:
                 st.error(f"Error processing upload: {e}")
 
-
-        # --- Trend for these equipment ---
+    # --- Trend for these equipment ---
     st.markdown("---")
     show_trend = st.checkbox("📈 Show Deviation Trend for Equipment", key="portfolio_show_trend")
     if show_trend:
         import pandas as pd
         avg_dev_df['Label'] = avg_dev_df.apply(
-            lambda row: f"{row['plant']}_{row['input_name']}_{row['Avg Deviation (%)']:.2f}%", axis=1
-    )
+            lambda row: f"{row['plant']} - {row['input_name']} - {row['Avg Deviation (%)']:.2f}%", axis=1
+        )
         equipment_options = avg_dev_df['Label'].tolist()
         selected_eq_labels = st.multiselect("Select Equipment(s) for Trend View", equipment_options, key="portfolio_trend_eq")
         if selected_eq_labels:
-            label_to_plant_eq = {label: (row['plant'], row['input_name']) for label, row in zip(avg_dev_df['Label'], avg_dev_df.to_dict('records'))}
+            label_to_plant_eq = {label: label.split(' - ')[:2] for label in equipment_options}
             date_range = pd.date_range(start=portfolio_date_start, end=portfolio_date_end)
             fig_trend = go.Figure()
             for label in selected_eq_labels:
-                plant, equip = label_to_plant_eq[label]
-                eq_trend_df = df_portfolio[
-                    (df_portfolio['plant'] == plant) &
-                    (df_portfolio['input_name'] == equip)
-                ].copy()
+                plant_equip = label_to_plant_eq[label]
+                plant = plant_equip[0]
+                equip = plant_equip[1]
+                eq_trend_df = df_portfolio[(df_portfolio['plant'] == plant) & (df_portfolio['input_name'] == equip)].copy()
                 eq_trend_df['date'] = pd.to_datetime(eq_trend_df['date'])
                 # Aggregate to one value per date if needed (e.g., mean)
                 eq_trend_df = eq_trend_df.groupby('date')['value'].mean().reindex(date_range).reset_index()
@@ -707,12 +709,11 @@ with tab4:
         else:
             st.info("Select at least one equipment to view the trend.")
 
-
     # --- Tag Reason/Comment Section (for these equipment) ---
     st.markdown("---")
     st.markdown("### 🏷️ Tag Reason/Comment for Underperforming Equipment")
     avg_dev_df['Label'] = avg_dev_df.apply(
-        lambda row: f"{row['plant']}_{row['input_name']}_{row['Avg Deviation (%)']:.2f}%", axis=1
+        lambda row: f"{row['plant']} - {row['input_name']} - {row['Avg Deviation (%)']:.2f}%", axis=1
     )
     tag_eq_options = avg_dev_df['Label'].tolist()
     selected_tag_labels = st.multiselect("Select Equipment(s) for Tagging", tag_eq_options, key="portfolio_tag_eq")
@@ -730,63 +731,122 @@ with tab4:
         not tag_comment.strip()
     )
 
-    if st.button("Submit Reason/Comment", disabled=disable_submit, key="portfolio_tag_submit"):
-        if not tag_date_range:
-            tag_start, tag_end = portfolio_date_end, portfolio_date_end
+    from datetime import datetime
+
+    supabase = get_supabase_client()
+
+    if st.button("Submit Reason/Comment", disabled=disable_submit, key="portfolio_submit_reason"):
+        if len(tag_date_range) != 2 or tag_date_range[1] < tag_date_range[0]:
+            st.error("Invalid date range.")
         else:
-            tag_start, tag_end = tag_date_range[0], tag_date_range[1]
+            fault_start_date, fault_end_date = tag_date_range
+            reason_to_store = custom_reason_input.strip() if selected_reason == "Others" else selected_reason
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            insert_count = 0
+            # Batch approach: collect inserts and updates separately
+            inserts = []
+            updates = []
+            update_ids = []
+            for label in selected_tag_labels:
+                parts = label.split(' - ')
+                plant = parts[0]
+                equip = parts[1]
+                for d in pd.date_range(fault_start_date, fault_end_date):
+                    tag_date = d.strftime("%Y-%m-%d")
+                    # Fetch deviation from DuckDB (keep this local)
+                    with duckdb.connect(DB_PATH) as con:
+                        dev_query = """
+                            SELECT AVG(value) FROM dgr_data
+                            WHERE plant = ? AND input_name = ? AND date = ?
+                        """
+                        res = con.execute(dev_query, (plant, equip, tag_date)).fetchone()
+                        deviation_val = res[0] if res and res[0] is not None else 0.0  # Handle None
+                    # Check if exists in Supabase
+                    match = supabase.table("deviation_reasons").select("*").eq("plant", plant).eq("date", tag_date).eq("input_name", equip).execute()
+                    data = match.data if match.data else []
+                    if data:
+                        # Collect for batch update
+                        record_id = data[0]['id']
+                        old_data = data[0]
+                        updates.append({
+                            "reason": reason_to_store,
+                            "comment": tag_comment.strip(),
+                            "deviation": deviation_val,
+                            "timestamp": now_str,
+                            "fault_start_date": fault_start_date.strftime("%Y-%m-%d"),
+                            "fault_end_date": fault_end_date.strftime("%Y-%m-%d")
+                        })
+                        update_ids.append(record_id)
+                        # Audit log for update
+                        supabase.table("reason_audit_log").insert({
+                            "action_type": "update",
+                            "record_id": record_id,
+                            "old_value": str(old_data),
+                            "new_value": str({
+                                "reason": reason_to_store,
+                                "comment": tag_comment.strip(),
+                                "deviation": deviation_val,
+                                "timestamp": now_str,
+                                "fault_start_date": fault_start_date.strftime("%Y-%m-%d"),
+                                "fault_end_date": fault_end_date.strftime("%Y-%m-%d")
+                            }),
+                            "timestamp": now_str
+                        }).execute()
+                    else:
+                        # Collect for batch insert
+                        inserts.append({
+                            "plant": plant,
+                            "date": tag_date,
+                            "input_name": equip,
+                            "deviation": deviation_val,
+                            "reason": reason_to_store,
+                            "comment": tag_comment.strip(),
+                            "timestamp": now_str,
+                            "fault_start_date": fault_start_date.strftime("%Y-%m-%d"),
+                            "fault_end_date": fault_end_date.strftime("%Y-%m-%d")
+                        })
+            # Perform batch operations
+            chunk_size = 50
+            if inserts:
+                for i in range(0, len(inserts), chunk_size):
+                    chunk = inserts[i:i+chunk_size]
+                    try:
+                        resp = supabase.table("deviation_reasons").insert(chunk).execute()
+                        insert_count += len(resp.data)
+                        # Batch audit log for inserts
+                        audit_inserts = []
+                        for insert in chunk:
+                            audit_inserts.append({
+                                "action_type": "insert",
+                                "record_id": None,  # Can be fetched if needed
+                                "old_value": None,
+                                "new_value": str(insert),
+                                "timestamp": now_str
+                            })
+                        supabase.table("reason_audit_log").insert(audit_inserts).execute()
+                    except Exception as e:
+                        st.error(f"Chunk insert failed: {e}")
+            if updates:
+                for i, update in enumerate(updates):
+                    try:
+                        supabase.table("deviation_reasons").update(update).eq("id", update_ids[i]).execute()
+                        insert_count += 1
+                    except Exception as e:
+                        st.error(f"Update failed for id {update_ids[i]}: {e}")
+            st.success(f"Reason/comment tagged for {len(selected_tag_labels)} equipment across {insert_count} days.")
+            st.rerun()
 
-        timestamp_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        entries = []
-        for label in selected_tag_labels:
-            plant, equip, deviation_str = label.rsplit('_', 2)
-            deviation_val = float(deviation_str.replace('%', ''))
-            current_date = tag_start
-            while current_date <= tag_end:
-                entries.append({
-                    "plant": plant,
-                    "date": str(current_date),
-                    "input_name": equip,
-                    "deviation": deviation_val,
-                    "reason": custom_reason_input.strip() if selected_reason == "Others" else selected_reason,
-                    "comment": tag_comment.strip(),
-                    "timestamp": timestamp_now,
-                    "fault_start_date": str(tag_start),
-                    "fault_end_date": str(tag_end)
-                })
-                current_date += pd.Timedelta(days=1)
-        with duckdb.connect(DB_PATH) as con:
-            for entry in entries:
-                con.execute(f"""
-                    INSERT INTO deviation_reasons (plant, date, input_name, deviation, reason, comment, timestamp, fault_start_date, fault_end_date)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, list(entry.values()))
-        st.success(f"✅ Saved {len(entries)} records successfully!")
-        st.rerun()
-    
-    # --- Fault Map & Editable Log below as before ---
-    # ... (use your existing code for visual fault map, log, etc. The key thing is ALL upstream logic is now uniform.)
-
-
-    import plotly.express as px
-
-    # ---- Visual Fault Map ----
+    # --- Fault Map & Editable Log below as before --- (MIGRATED TO SUPABASE)
     st.markdown("---")
     st.markdown("#### 📅 Visual Fault Map")
-    with duckdb.connect(DB_PATH) as con:
-        fault_query = f"""
-            SELECT plant, date, input_name, deviation, reason, comment, fault_start_date, fault_end_date, timestamp
-            FROM deviation_reasons
-            WHERE plant IN ({','.join(['?'] * len(portfolio_plants))})
-            AND CAST(date AS DATE) BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
-        """
-        fault_params = portfolio_plants + [portfolio_date_start, portfolio_date_end]
-        fault_df = con.execute(fault_query, fault_params).df()
+    supabase = get_supabase_client()
+    fault_query = supabase.table("deviation_reasons").select("*").in_("plant", portfolio_plants).gte("date", str(portfolio_date_start)).lte("date", str(portfolio_date_end)).execute()
+    fault_df = pd.DataFrame(fault_query.data) if fault_query.data else pd.DataFrame()
 
     if fault_df.empty:
         st.info("No tagged reasons/comments found for selection.")
     else:
-        fault_df['Label'] = fault_df.apply(lambda r: f"{r['plant']}_{r['input_name']}", axis=1)
+        fault_df['Label'] = fault_df.apply(lambda r: f"{r['plant']} - {r['input_name']}", axis=1)
         fault_df['Date'] = pd.to_datetime(fault_df['date'])
 
         # Assign a unique color for each distinct reason
@@ -800,7 +860,7 @@ with tab4:
             scatter_y.append(row['Label'])
             scatter_color.append(color_map[row['reason']])
             scatter_text.append(
-                f"Date: {row['Date'].date()}<br>Plant: {row['plant']}<br>Equipment: {row['input_name']}<br>Deviation: {row['deviation']:.2f}%<br>Reason: {row['reason']}<br>Comment: {row['comment']}"
+                f"Date: {row['Date'].date()}<br>Plant: {row['plant']}<br>Equipment: {row['input_name']}<br>Deviation: {float(row.get('deviation') or 0):.2f}%<br>Reason: {row['reason']}<br>Comment: {row['comment']}"
             )
         fault_fig = go.Figure(go.Scatter(
             x=scatter_x,
@@ -823,7 +883,7 @@ with tab4:
         legend_html = ""
         for reason in unique_reasons:
             color = color_map[reason]
-            legend_html += f"<span style='color:{color}; font-size:22px'>&#11044;</span> {reason}&nbsp;&nbsp;&nbsp;"
+            legend_html += f"<span style='color:{color}; font-size:22px'>⬤</span> {reason}   "
         st.markdown("**Legend:**<br>" + legend_html, unsafe_allow_html=True)
 
     # ---- Editable Log Table ----
@@ -847,12 +907,67 @@ with tab4:
         log_display_df = log_display_df.sort_values(["Date", "Tagged Timestamp"], ascending=[False, False])
         st.dataframe(log_display_df, use_container_width=True)
         st.download_button("Download Log (Excel)", log_display_df.to_csv(index=False), "fault_log.csv", "text/csv")
+
+        # Individual edit/delete
+        for idx, row in log_display_df.iterrows():
+            with st.expander(f"{row['Date']} | {row['Equipment Name']} | {row['Reason']}"):
+                new_reason = st.selectbox("Edit Reason", REASON_OPTIONS, index=REASON_OPTIONS.index(row['Reason']) if row['Reason'] in REASON_OPTIONS else len(REASON_OPTIONS)-1, key=f"edit_reason_port_{idx}")
+                custom_edit_reason = ""
+                if new_reason == "Others":
+                    custom_edit_reason = st.text_input("Custom Reason", row['Reason'] if row['Reason'] not in REASON_OPTIONS else "", key=f"edit_custom_port_{idx}")
+                new_comment = st.text_area("Edit Comment", row["Comment"], key=f"edit_comment_port_{idx}")
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("Update", key=f"update_port_{idx}"):
+                        if not new_comment.strip() or (new_reason == "Others" and not custom_edit_reason.strip()):
+                            st.error("Reason and Comment are mandatory.")
+                        else:
+                            reason_final = custom_edit_reason.strip() if new_reason == "Others" else new_reason
+                            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            match = supabase.table("deviation_reasons").select("*").eq("plant", row["Plant Name"]).eq("date", row["Date"]).eq("input_name", row["Equipment Name"]).eq("timestamp", row["Tagged Timestamp"]).execute()
+                            if match.data:
+                                record_id = match.data[0]['id']
+                                old_data = match.data[0]
+                                supabase.table("deviation_reasons").update({
+                                    "reason": reason_final,
+                                    "comment": new_comment.strip(),
+                                    "timestamp": now_str  # Update timestamp on edit
+                                }).eq("id", record_id).execute()
+                                # Audit log
+                                supabase.table("reason_audit_log").insert({
+                                    "action_type": "update",
+                                    "record_id": record_id,
+                                    "old_value": str(old_data),
+                                    "new_value": str({
+                                        "reason": reason_final,
+                                        "comment": new_comment.strip(),
+                                        "timestamp": now_str
+                                    }),
+                                    "timestamp": now_str
+                                }).execute()
+                                st.success("Updated!")
+                                st.rerun()
+                with col2:
+                    if st.button("Delete", key=f"delete_port_{idx}"):
+                        match = supabase.table("deviation_reasons").select("*").eq("plant", row["Plant Name"]).eq("date", row["Date"]).eq("input_name", row["Equipment Name"]).eq("timestamp", row["Tagged Timestamp"]).execute()
+                        if match.data:
+                            record_id = match.data[0]['id']
+                            old_data = match.data[0]
+                            supabase.table("deviation_reasons").delete().eq("id", record_id).execute()
+                            # Audit log
+                            supabase.table("reason_audit_log").insert({
+                                "action_type": "delete",
+                                "record_id": record_id,
+                                "old_value": str(old_data),
+                                "new_value": None,
+                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            }).execute()
+                            st.success("Deleted!")
+                            st.rerun()
     else:
-        st.info("No fault log data available.")
+        st.info("No log entries for this selection.")
 
-
-
-import duckdb
+# --- TAB 5: VISUAL SUMMARY --- (MIGRATED TO SUPABASE)
 import plotly.graph_objects as go
 import streamlit as st
 import pandas as pd
@@ -861,45 +976,27 @@ from datetime import date
 with tab5:
     st.subheader("📊 Visual Summary: Fault Distribution & Logs")
 
-    # ---- 1. Load Full RCA Table (all time) ----
-    with duckdb.connect(DB_PATH) as con:
-        summary_df = con.execute("""
-            SELECT plant, date, input_name, deviation, reason, comment, fault_start_date, fault_end_date, timestamp
-            FROM deviation_reasons
-        """).df()
+    # ---- 1. Load Filtered RCA Table from Supabase ----
+    supabase = get_supabase_client()
+    summary_query = supabase.table("deviation_reasons").select("*").in_("plant", plant_select).gte("date", str(date_start)).lte("date", str(date_end)).execute()
+    summary_df = pd.DataFrame(summary_query.data) if summary_query.data else pd.DataFrame()
 
     if summary_df.empty:
-        st.info("No reason/comment data found for any plant.")
+        st.info("No reason/comment data found for selected plants and date range.")
         st.stop()
 
     # ---- 2. Clean Plant Names for Filters ----
     def clean_plant_name(x):
-        # Adjust splitting logic if your plant naming has a different pattern!
-        return x.split('_')[0].strip() if '_' in x else x.strip()
+        return x  # No splitting, keep full name
+
     summary_df['plant_clean'] = summary_df['plant'].apply(clean_plant_name)
 
     summary_df = summary_df.rename(columns={'input_name': 'Equipment Name'})
 
-    # ---- 3. Plant filter with "All Plants" ----
-    plants_with_logs = sorted(summary_df['plant_clean'].unique())
-    plants_with_logs_display = ["All Plants"] + plants_with_logs
-    plant_filter = st.selectbox("Select Plant:", plants_with_logs_display, key="vs_log_plant_filter")
-
-    # ---- 4. Date range filter for Pie Chart (uses min/max from filtered plant) ----
-    df_for_pie = summary_df if plant_filter == "All Plants" else summary_df[summary_df['plant_clean'] == plant_filter]
-    min_date = pd.to_datetime(df_for_pie['date']).min().date()
-    max_date = pd.to_datetime(df_for_pie['date']).max().date()
-    pie_date_range = st.date_input("Select Date Range for Pie Chart", value=(min_date, max_date), min_value=min_date, max_value=max_date)
-    pie_start, pie_end = pie_date_range
-
-    # ---- 5. Pie Chart (responsive to plant + date) ----
-    pie_df = df_for_pie[
-        (pd.to_datetime(df_for_pie['date']).dt.date >= pie_start) &
-        (pd.to_datetime(df_for_pie['date']).dt.date <= pie_end)
-    ]
-    pie_title = f"Reason Distribution for {plant_filter}"
-    if (pie_start != min_date) or (pie_end != max_date):
-        pie_title += f", {pie_start} to {pie_end}"
+    # ---- 3. Pie Chart ----
+    df_for_pie = summary_df
+    pie_df = df_for_pie
+    pie_title = f"Reason Distribution for {', '.join(plant_select) if plant_select else 'Selected Plants'}, {date_start} to {date_end}"
     reason_counts = pie_df['reason'].value_counts().reset_index()
     reason_counts.columns = ['Reason', 'Count']
     pie_fig = go.Figure(go.Pie(
@@ -910,29 +1007,42 @@ with tab5:
     pie_fig.update_layout(title=pie_title, height=450)
     st.plotly_chart(pie_fig, use_container_width=True)
 
-    # ---- 6. Equipment filter as Plant_Equipment ----
-    filtered_df = summary_df if plant_filter == "All Plants" else summary_df[summary_df['plant_clean'] == plant_filter]
+    # New: Stacked bar chart for plant-fault breakdown
+    plant_reason_df = pie_df.groupby(['plant', 'reason']).size().reset_index(name='Count')
+    plant_reason_fig = px.bar(
+        plant_reason_df,
+        x='plant',
+        y='Count',
+        color='reason',
+        title="Plant-Specific Fault Breakdown",
+        barmode='stack',
+        category_orders={"reason": REASON_LIST}
+    )
+    st.plotly_chart(plant_reason_fig, use_container_width=True)
+
+    # ---- 4. Equipment filter as Plant_Equipment ----
+    filtered_df = summary_df
     eq_with_logs_raw = filtered_df[['plant_clean', 'Equipment Name']].drop_duplicates()
-    eq_with_logs_raw['equip_display'] = eq_with_logs_raw['plant_clean'] + "_" + eq_with_logs_raw['Equipment Name']
+    eq_with_logs_raw['equip_display'] = eq_with_logs_raw['plant_clean'] + " - " + eq_with_logs_raw['Equipment Name']
     eq_with_logs_display = ["All Equipment"] + sorted(eq_with_logs_raw['equip_display'].unique())
     equip_display_to_real = dict(zip(eq_with_logs_raw['equip_display'], eq_with_logs_raw['Equipment Name']))
     equipment_filter = st.selectbox("Select Equipment:", eq_with_logs_display, key="vs_log_eq_filter")
     if equipment_filter != "All Equipment":
         filtered_df = filtered_df[filtered_df['Equipment Name'] == equip_display_to_real[equipment_filter]]
 
-    # ---- 7. Reason filter ----
+    # ---- 5. Reason filter ----
     reasons_present = filtered_df['reason'].unique().tolist()
     reasons_display = ["All Reasons"] + sorted([r for r in reasons_present if r])
     reason_filter = st.selectbox("Select Reason:", reasons_display, key="vs_log_reason_filter")
     if reason_filter != "All Reasons":
         filtered_df = filtered_df[filtered_df['reason'] == reason_filter]
 
-    # ---- 8. Sort log by latest date first ----
+    # ---- 6. Sort log by latest date first ----
     filtered_df = filtered_df.sort_values(["date", "timestamp"], ascending=[False, False]).reset_index(drop=True)
 
-    # ---- 9. Bulk delete + download (side by side) ----
+    # ---- 7. Bulk delete + download (side by side) ----
     filtered_df["label"] = filtered_df.apply(
-        lambda row: f"{row['plant_clean']}_{row['Equipment Name']} | {row['date']} | {row['reason']} | {row['fault_start_date']}→{row['fault_end_date']}", axis=1
+        lambda row: f"{row['plant_clean']} - {row['Equipment Name']} | {row['date']} | {row['reason']} | {row['fault_start_date']}→{row['fault_end_date']}", axis=1
     )
     label_to_row = {row["label"]: row for _, row in filtered_df.iterrows()}
     selected_labels = st.multiselect(
@@ -941,13 +1051,22 @@ with tab5:
     col_bulk, col_download = st.columns([1, 2])
     with col_bulk:
         if st.button("Delete Selected Comments", disabled=len(selected_labels) == 0, key="vs_delete_bulk"):
-            with duckdb.connect(DB_PATH) as con:
-                for label in selected_labels:
-                    row = label_to_row[label]
-                    con.execute(
-                        "DELETE FROM deviation_reasons WHERE plant=? AND date=? AND input_name=? AND timestamp=?",
-                        (row["plant"], row["date"], row["Equipment Name"], row["timestamp"])
-                    )
+            supabase = get_supabase_client()
+            for label in selected_labels:
+                row = label_to_row[label]
+                match = supabase.table("deviation_reasons").select("*").eq("plant", row["plant"]).eq("date", row["date"]).eq("input_name", row["Equipment Name"]).eq("timestamp", row["timestamp"]).execute()
+                if match.data:
+                    record_id = match.data[0]['id']
+                    old_data = match.data[0]
+                    supabase.table("deviation_reasons").delete().eq("id", record_id).execute()
+                    # Audit log
+                    supabase.table("reason_audit_log").insert({
+                        "action_type": "delete",
+                        "record_id": record_id,
+                        "old_value": str(old_data),
+                        "new_value": None,
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    }).execute()
             st.success(f"Deleted {len(selected_labels)} comment(s).")
             st.rerun()
     with col_download:
@@ -958,7 +1077,7 @@ with tab5:
             "text/csv"
         )
 
-    # ---- 10. Individual log entry (edit/delete) ----
+    # ---- 8. Individual log entry (edit/delete) ----
     reason_options = [
         "Soiling", "Shadow", "Disconnected String", "Connector Burn", "Fuse Failure", "IGBT Failure",
         "Module Damage", "Power Clipping", "Vegetation Growth", "Bypass diode", "Degradation", "Temperature Loss",
@@ -967,11 +1086,7 @@ with tab5:
         "Bifacial factor Loss", "Power Limitation", "Others"
     ]
     for idx, row in filtered_df.iterrows():
-        expander_label = (
-            f"{row['plant_clean']}_{row['Equipment Name']} | {row['date']} | "
-            f"Fault: {row['fault_start_date']}→{row['fault_end_date']} | "
-            f"%Dev: {row['deviation']} | Reason: {row['reason']}"
-        )
+        expander_label = f"{row['plant_clean']} - {row['Equipment Name']} | {row['date']} | Fault: {row['fault_start_date']}→{row['fault_end_date']} | %Dev: {float(row.get('deviation') or 0):.2f} | Reason: {row['reason']}"
         with st.expander(expander_label):
             col1, col2 = st.columns(2)
             with col1:
@@ -981,7 +1096,7 @@ with tab5:
                 st.write(f"**Fault Start:** {row['fault_start_date']}")
                 st.write(f"**Fault End:** {row['fault_end_date']}")
             with col2:
-                st.write(f"**%Deviation:** {row['deviation']}")
+                st.write(f"**%Deviation:** {float(row.get('deviation') or 0):.2f}")
                 st.write(f"**Reason:** {row['reason']}")
                 st.write(f"**Comment:** {row['comment']}")
                 st.write(f"**Timestamp:** {row['timestamp']}")
@@ -1004,27 +1119,50 @@ with tab5:
                     if not new_comment.strip() or (new_reason == "Others" and not custom_reason_vs.strip()):
                         st.error("Reason and Comment are mandatory.")
                     else:
-                        with duckdb.connect(DB_PATH) as con:
-                            con.execute(f"""
-                                UPDATE deviation_reasons
-                                SET reason=?, comment=?
-                                WHERE plant=? AND date=? AND input_name=? AND timestamp=?
-                            """, (
-                                custom_reason_vs.strip() if new_reason == "Others" else new_reason,
-                                new_comment.strip(),
-                                row["plant"], row["date"], row["Equipment Name"], row["timestamp"]
-                            ))
-                        st.success("Updated!")
-                        st.rerun()
+                        supabase = get_supabase_client()
+                        reason_final = custom_reason_vs.strip() if new_reason == "Others" else new_reason
+                        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        match = supabase.table("deviation_reasons").select("*").eq("plant", row["plant"]).eq("date", row["date"]).eq("input_name", row["Equipment Name"]).eq("timestamp", row["timestamp"]).execute()
+                        if match.data:
+                            record_id = match.data[0]['id']
+                            old_data = match.data[0]
+                            supabase.table("deviation_reasons").update({
+                                "reason": reason_final,
+                                "comment": new_comment.strip(),
+                                "timestamp": now_str  # Update timestamp on edit
+                            }).eq("id", record_id).execute()
+                            # Audit log
+                            supabase.table("reason_audit_log").insert({
+                                "action_type": "update",
+                                "record_id": record_id,
+                                "old_value": str(old_data),
+                                "new_value": str({
+                                    "reason": reason_final,
+                                    "comment": new_comment.strip(),
+                                    "timestamp": now_str
+                                }),
+                                "timestamp": now_str
+                            }).execute()
+                            st.success("Updated!")
+                            st.rerun()
             with col2b:
                 if st.button("Delete", key=f"vs_delete_{idx}"):
-                    with duckdb.connect(DB_PATH) as con:
-                        con.execute(f"""
-                            DELETE FROM deviation_reasons
-                            WHERE plant=? AND date=? AND input_name=? AND timestamp=?
-                        """, (row["plant"], row["date"], row["Equipment Name"], row["timestamp"]))
-                    st.success("Deleted!")
-                    st.rerun()
+                    supabase = get_supabase_client()
+                    match = supabase.table("deviation_reasons").select("*").eq("plant", row["plant"]).eq("date", row["date"]).eq("input_name", row["Equipment Name"]).eq("timestamp", row["timestamp"]).execute()
+                    if match.data:
+                        record_id = match.data[0]['id']
+                        old_data = match.data[0]
+                        supabase.table("deviation_reasons").delete().eq("id", record_id).execute()
+                        # Audit log
+                        supabase.table("reason_audit_log").insert({
+                            "action_type": "delete",
+                            "record_id": record_id,
+                            "old_value": str(old_data),
+                            "new_value": None,
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        }).execute()
+                        st.success("Deleted!")
+                        st.rerun()
 
     if filtered_df.empty:
         st.info("No fault log data available for this filter.")

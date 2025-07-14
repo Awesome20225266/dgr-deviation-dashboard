@@ -3,17 +3,25 @@ import duckdb
 import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
+from supabase import create_client, Client
+from functools import lru_cache
+
+SUPABASE_URL = "https://ubkcxehguactwwcarkae.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVia2N4ZWhndWFjdHd3Y2Fya2FlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTIyMTU3OTYsImV4cCI6MjA2Nzc5MTc5Nn0.NPiJj_o-YervOE1dPxWRJhEI1fUwxT3Dptz-JszChLo"
+
+def get_supabase_client():
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 DB_PATH = "dgr_data.duckdb"
 PERF_TABLE = "dgr_data"
-REASON_TABLE = "deviation_reasons"
 
 REASON_LIST = [
     "Soiling", "Shadow", "Disconnected String", "Connector Burn", "Fuse Failure", "IGBT Failure", "Module Damage",
     "Power Clipping", "Vegetation Growth", "Bypass diode", "Degradation", "Temperature Loss", "RISO Fault",
     "MPPT Malfunction", "Grid Outage", "Load Curtailment", "Efficiency loss", "Ground Fault", "Module Mismatch",
-    "IIGBT Issue", "Array Misalignment", "Tracker Failure", "Inverter Fan Issue", "Bifacial factor Loss",
+    "IIGBT Issue", "Array Misalignment", "Tracker Failure", "Inverter Fan Issue",
+    "Bifacial factor Loss",
     "Power Limitation", "Others"
 ]
 REASON_COLOR = {
@@ -25,6 +33,18 @@ REASON_COLOR = {
     "Array Misalignment": "#ffe082", "Tracker Failure": "#b71c1c", "Inverter Fan Issue": "#0277bd",
     "Bifacial factor Loss": "#81c784", "Power Limitation": "#ff7043", "Others": "#616161"
 }
+
+@lru_cache(maxsize=128)
+def fetch_perf_data(plant_tuple, date_start_str, date_end_str):
+    plant_list = list(plant_tuple)
+    with duckdb.connect(DB_PATH) as con:
+        perf_query = f"""
+            SELECT * FROM {PERF_TABLE}
+            WHERE plant IN ({','.join(['?']*len(plant_list))})
+              AND date BETWEEN ? AND ?
+        """
+        perf_params = plant_list + [date_start_str, date_end_str]
+        return con.execute(perf_query, perf_params).df()
 
 def render_visualisation_tab(plant_select, date_start, date_end, threshold):
     global REASON_LIST
@@ -44,36 +64,9 @@ def render_visualisation_tab(plant_select, date_start, date_end, threshold):
 
     st.header("🌞 Visualisation & Root Cause Analytics")
 
-    # Ensure reasons table exists (safe to do every run)
-    with duckdb.connect(DB_PATH) as con:
-        con.execute(f"""
-            CREATE TABLE IF NOT EXISTS {REASON_TABLE} (
-                plant TEXT,
-                date TEXT,
-                input_name TEXT,
-                reason TEXT,
-                comment TEXT,
-                timestamp TEXT
-            );
-        """)
-
-    with duckdb.connect(DB_PATH) as con:
-        perf_query = f"""
-            SELECT * FROM {PERF_TABLE}
-            WHERE plant IN ({','.join(['?']*len(plant_select))})
-              AND date BETWEEN ? AND ?
-        """
-        perf_params = plant_select + [str(date_start), str(date_end)]
-        perf_df = con.execute(perf_query, perf_params).df()
-        try:
-            reason_query = f"""
-                SELECT * FROM {REASON_TABLE}
-                WHERE plant IN ({','.join(['?']*len(plant_select))})
-                  AND date BETWEEN ? AND ?
-            """
-            reason_df = con.execute(reason_query, perf_params).df()
-        except Exception:
-            reason_df = pd.DataFrame(columns=["plant", "date", "input_name", "value", "reason", "comment"])
+    date_start_str = str(date_start)
+    date_end_str = str(date_end)
+    perf_df = fetch_perf_data(tuple(plant_select), date_start_str, date_end_str)
 
     tabs = st.tabs(["Plant Overview", "Equipment Drilldown", "Root Cause Analytics"])
 
@@ -195,7 +188,7 @@ def render_visualisation_tab(plant_select, date_start, date_end, threshold):
             else:
                 st.info("Please select at least one plant and a valid date range.")
 
-        # ----------- Equipment Drilldown Tab -----------
+        # ----------- Equipment Drilldown Tab ----------- (MIGRATED TO SUPABASE FOR REASONS/COMMENTS)
         with tabs[1]:
             if len(plant_select) != 1:
                 st.info("Please select exactly one plant to view equipment drilldown.")
@@ -224,9 +217,9 @@ def render_visualisation_tab(plant_select, date_start, date_end, threshold):
 
             st.markdown(
                 f"<b>Bar color legend:</b> "
-                f"<span style='color:green'>Green</span>: ≥ 0% &nbsp;&nbsp;"
-                f"<span style='color:orange'>Orange</span>: 0% to {threshold_value}% &nbsp;&nbsp;"
-                f"<span style='color:red'>Red</span>: &lt; {threshold_value}%",
+                f"<span style='color:green'>Green</span>: ≥ 0%   "
+                f"<span style='color:orange'>Orange</span>: 0% to {threshold_value}%   "
+                f"<span style='color:red'>Red</span>: < {threshold_value}%",
                 unsafe_allow_html=True
             )
 
@@ -292,10 +285,8 @@ def render_visualisation_tab(plant_select, date_start, date_end, threshold):
                 )
                 st.plotly_chart(trend_fig, use_container_width=True)
 
-            import datetime
-
             st.markdown("---")
-            st.markdown("### 🏷️ Tag Reason/Comment for Equipment Underperformance")
+            st.markdown("### 🏷️ Tag Reason/Comment for Equipment Underperformance")  # (MIGRATED TO SUPABASE)
             eq_dropdown_options = [f"🌐 Whole Plant"] + list(equip_metrics['emoji_label'])
             selected_label = st.selectbox("Select Equipment (with status badge)", eq_dropdown_options, key="reason_equip_select")
             if selected_label.startswith("🌐"):
@@ -315,7 +306,10 @@ def render_visualisation_tab(plant_select, date_start, date_end, threshold):
                 value=(date_start, date_end),   # You can use any default range, e.g. the analysis range
                 key="fault_date_range"
             )
-            fault_start_date, fault_end_date = fault_date_range
+            if len(fault_date_range) == 2:
+                fault_start_date, fault_end_date = fault_date_range
+            else:
+                fault_start_date = fault_end_date = fault_date_range[0]  # Handle single date
 
             comment = st.text_area(
                 "Comment (Action/Status)*",
@@ -330,16 +324,20 @@ def render_visualisation_tab(plant_select, date_start, date_end, threshold):
                 or (not comment.strip())
             )
 
-            if st.button("Submit Reason/Comment", disabled=submit_disabled):
+            supabase = get_supabase_client()
+
+            if st.button("Submit Reason/Comment", disabled=submit_disabled, key="equip_submit_reason"):
                 if fault_end_date < fault_start_date:
                     st.error("End date cannot be before start date.")
                 else:
                     reason_to_store = custom_reason.strip() if reason == "Others" else reason
                     insert_count = 0
-                    with duckdb.connect(DB_PATH) as con:
-                        for d in range((fault_end_date - fault_start_date).days + 1):
-                            tag_date = (fault_start_date + datetime.timedelta(days=d)).strftime("%Y-%m-%d")
-                            # Fetch deviation value from the correct table
+                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    entries = []
+                    for d in range((fault_end_date - fault_start_date).days + 1):
+                        tag_date = (fault_start_date + timedelta(days=d)).strftime("%Y-%m-%d")
+                        # Fetch deviation value from the correct table (DuckDB)
+                        with duckdb.connect(DB_PATH) as con:
                             if selected_eq != "Whole Plant":
                                 dev_query = """
                                     SELECT value FROM dgr_data
@@ -347,48 +345,50 @@ def render_visualisation_tab(plant_select, date_start, date_end, threshold):
                                     LIMIT 1
                                 """
                                 res = con.execute(dev_query, (plant_select[0], selected_eq, tag_date)).fetchone()
-                                deviation_val = res[0] if res is not None else None
+                                deviation_val = res[0] if res and res[0] is not None else 0.0  # Handle None
                             else:
                                 dev_query = """
                                     SELECT AVG(value) FROM dgr_data
                                     WHERE plant = ? AND date = ?
                                 """
                                 res = con.execute(dev_query, (plant_select[0], tag_date)).fetchone()
-                                deviation_val = res[0] if res is not None else None
-                            # Insert including deviation
-                            con.execute(
-                                f"""INSERT INTO {REASON_TABLE}
-                                (plant, date, input_name, deviation, reason, comment, fault_start_date, fault_end_date, timestamp)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                                (
-                                    plant_select[0],
-                                    tag_date,
-                                    selected_eq,
-                                    deviation_val,
-                                    reason_to_store,
-                                    comment.strip(),
-                                    fault_start_date.strftime("%Y-%m-%d"),
-                                    fault_end_date.strftime("%Y-%m-%d"),
-                                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                )
-                            )
-                            insert_count += 1
+                                deviation_val = res[0] if res and res[0] is not None else 0.0  # Handle None
+                        entries.append({
+                            "plant": plant_select[0],
+                            "date": tag_date,
+                            "input_name": selected_eq,
+                            "deviation": deviation_val,
+                            "reason": reason_to_store,
+                            "comment": comment.strip(),
+                            "timestamp": now_str,
+                            "fault_start_date": fault_start_date.strftime("%Y-%m-%d"),
+                            "fault_end_date": fault_end_date.strftime("%Y-%m-%d")
+                        })
+                    # Batch insert to Supabase for speed
+                    resp = supabase.table("deviation_reasons").insert(entries).execute()
+                    insert_count = len(resp.data) if resp.data else 0
+                    # Batch audit log (simplified, assuming batch insert success)
+                    audit_entries = []
+                    for entry in entries:
+                        audit_entries.append({
+                            "action_type": "insert",
+                            "record_id": None,  # Can fetch if needed, but skip for speed
+                            "old_value": None,
+                            "new_value": str(entry),
+                            "timestamp": now_str
+                        })
+                    supabase.table("reason_audit_log").insert(audit_entries).execute()
                     st.success(f"Reason/comment tagged for {selected_eq} from {fault_start_date} to {fault_end_date} ({insert_count} days).")
                     st.rerun()
 
 
-            # ---- Reason/Comment Activity Matrix ----
+            # ---- Reason/Comment Activity Matrix ---- (MIGRATED TO SUPABASE)
             st.markdown("#### 📅 Reason/Comment Activity Matrix")
             date_start_str = str(date_start)
             date_end_str = str(date_end)
-            with duckdb.connect(DB_PATH) as con:
-                query = f"""
-                    SELECT plant, date, input_name, reason, comment, timestamp
-                    FROM {REASON_TABLE}
-                    WHERE plant = ? 
-                    AND CAST(date AS DATE) BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
-                """
-                matrix_df = con.execute(query, (plant_select[0], date_start_str, date_end_str)).df()
+            supabase = get_supabase_client()
+            matrix_query = supabase.table("deviation_reasons").select("*").eq("plant", plant_select[0]).gte("date", date_start_str).lte("date", date_end_str).execute()
+            matrix_df = pd.DataFrame(matrix_query.data) if matrix_query.data else pd.DataFrame()
 
             if not matrix_df.empty:
                 equipment_list = sorted(matrix_df['input_name'].unique())
@@ -422,7 +422,7 @@ def render_visualisation_tab(plant_select, date_start, date_end, threshold):
                 ))
                 fig.update_xaxes(
                     title="Date",
-                    type="category",
+                    type="date",  # Change to 'date' for continuous axis without blanks
                     showgrid=True,
                     gridwidth=1, gridcolor='#ccc',
                     tickangle=45
@@ -435,9 +435,9 @@ def render_visualisation_tab(plant_select, date_start, date_end, threshold):
                 )
                 legend_items = []
                 for k, v in reason_map.items():
-                    legend_items.append(f"<span style='color:{v}; font-weight:bold;'>&#11044;</span> {k}")
+                    legend_items.append(f"<span style='color:{v}; font-weight:bold;'>⬤</span> {k}")
                 st.markdown(
-                    "**Legend:**<br>" + " &nbsp; ".join(legend_items),
+                    "**Legend:**<br>" + "   ".join(legend_items),
                     unsafe_allow_html=True
                 )
                 fig.update_layout(
@@ -450,7 +450,7 @@ def render_visualisation_tab(plant_select, date_start, date_end, threshold):
             else:
                 st.info("No tagged comments found for this plant and date range.")
 
-            # ---- Editable Table Log Below ----
+            # ---- Editable Table Log Below ---- (MIGRATED TO SUPABASE)
             st.markdown("#### 📝 Recent Reasons/Comments Log")
             if not matrix_df.empty:
                 log_df = matrix_df.copy()
@@ -469,27 +469,50 @@ def render_visualisation_tab(plant_select, date_start, date_end, threshold):
                                 if not new_comment.strip() or (new_reason == "Others" and not custom_edit_reason.strip()):
                                     st.error("Reason and Comment are mandatory.")
                                 else:
-                                    with duckdb.connect(DB_PATH) as con:
-                                        con.execute(f"""
-                                            UPDATE {REASON_TABLE}
-                                            SET reason=?, comment=?
-                                            WHERE plant=? AND date=? AND input_name=? AND timestamp=?
-                                        """, (
-                                            custom_edit_reason.strip() if new_reason == "Others" else new_reason,
-                                            new_comment.strip(),
-                                            row['plant'], row['date'], row['input_name'], row['timestamp']
-                                        ))
-                                    st.success("Updated!")
-                                    st.rerun()
+                                    reason_final = custom_edit_reason.strip() if new_reason == "Others" else new_reason
+                                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    supabase = get_supabase_client()
+                                    match = supabase.table("deviation_reasons").select("*").eq("plant", row["plant"]).eq("date", row["date"]).eq("input_name", row["input_name"]).eq("timestamp", row["timestamp"]).execute()
+                                    if match.data:
+                                        record_id = match.data[0]['id']
+                                        old_data = match.data[0]
+                                        supabase.table("deviation_reasons").update({
+                                            "reason": reason_final,
+                                            "comment": new_comment.strip(),
+                                            "timestamp": now_str  # Update timestamp on edit
+                                        }).eq("id", record_id).execute()
+                                        # Audit log
+                                        supabase.table("reason_audit_log").insert({
+                                            "action_type": "update",
+                                            "record_id": record_id,
+                                            "old_value": str(old_data),
+                                            "new_value": str({
+                                                "reason": reason_final,
+                                                "comment": new_comment.strip(),
+                                                "timestamp": now_str
+                                            }),
+                                            "timestamp": now_str
+                                        }).execute()
+                                        st.success("Updated!")
+                                        st.rerun()
                         with col2:
                             if st.button("Delete", key=f"delete_{idx}"):
-                                with duckdb.connect(DB_PATH) as con:
-                                    con.execute(f"""
-                                        DELETE FROM {REASON_TABLE}
-                                        WHERE plant=? AND date=? AND input_name=? AND timestamp=?
-                                    """, (row['plant'], row['date'], row['input_name'], row['timestamp']))
-                                st.success("Deleted!")
-                                st.rerun()
+                                supabase = get_supabase_client()
+                                match = supabase.table("deviation_reasons").select("*").eq("plant", row["plant"]).eq("date", row["date"]).eq("input_name", row["input_name"]).eq("timestamp", row["timestamp"]).execute()
+                                if match.data:
+                                    record_id = match.data[0]['id']
+                                    old_data = match.data[0]
+                                    supabase.table("deviation_reasons").delete().eq("id", record_id).execute()
+                                    # Audit log
+                                    supabase.table("reason_audit_log").insert({
+                                        "action_type": "delete",
+                                        "record_id": record_id,
+                                        "old_value": str(old_data),
+                                        "new_value": None,
+                                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    }).execute()
+                                    st.success("Deleted!")
+                                    st.rerun()
                 st.download_button(
                     "Download Reason/Comment Log (CSV)",
                     log_df[["date", "input_name", "reason", "comment", "timestamp"]].to_csv(index=False),
@@ -499,9 +522,12 @@ def render_visualisation_tab(plant_select, date_start, date_end, threshold):
             else:
                 st.info("No log entries for this selection.")
 
-        # ----------- Root Cause Analytics Tab -----------
+        # ----------- Root Cause Analytics Tab ----------- (MIGRATED TO SUPABASE)
         with tabs[2]:
             st.subheader("Root Cause Analytics & Remarks Log")
+            supabase = get_supabase_client()
+            reason_query = supabase.table("deviation_reasons").select("*").in_("plant", plant_select).gte("date", str(date_start)).lte("date", str(date_end)).execute()
+            reason_df = pd.DataFrame(reason_query.data) if reason_query.data else pd.DataFrame()
             if not reason_df.empty:
                 reason_count = reason_df["reason"].value_counts().reset_index()
                 reason_count.columns = ["Reason", "Count"]
@@ -517,27 +543,52 @@ def render_visualisation_tab(plant_select, date_start, date_end, threshold):
             if not reason_df.empty:
                 for idx, row in reason_df.iterrows():
                     with st.expander(f"{row['date']} | {row['input_name']} | {row['reason']}"):
-                        st.write(f"Deviation: {row.get('value', '')}%")
+                        st.write(f"Deviation: {row.get('deviation', 0.0):.2f}%")
                         new_reason = st.text_input("Edit Reason", row["reason"], key=f"reason_{idx}")
                         new_comment = st.text_area("Edit Comment", row["comment"], key=f"comment_{idx}")
                         col1, col2 = st.columns(2)
                         with col1:
                             if st.button("Update", key=f"update_root_{idx}"):
-                                with duckdb.connect(DB_PATH) as con:
-                                    con.execute(f"""
-                                        UPDATE {REASON_TABLE}
-                                        SET reason=?, comment=?
-                                        WHERE plant=? AND date=? AND input_name=?
-                                    """, (new_reason, new_comment, row["plant"], row["date"], row["input_name"]))
-                                st.success("Updated!")
+                                supabase = get_supabase_client()
+                                match = supabase.table("deviation_reasons").select("*").eq("plant", row["plant"]).eq("date", row["date"]).eq("input_name", row["input_name"]).execute()
+                                if match.data:
+                                    record_id = match.data[0]['id']
+                                    old_data = match.data[0]
+                                    supabase.table("deviation_reasons").update({
+                                        "reason": new_reason,
+                                        "comment": new_comment
+                                    }).eq("id", record_id).execute()
+                                    # Audit log
+                                    supabase.table("reason_audit_log").insert({
+                                        "action_type": "update",
+                                        "record_id": record_id,
+                                        "old_value": str(old_data),
+                                        "new_value": str({
+                                            "reason": new_reason,
+                                            "comment": new_comment
+                                        }),
+                                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    }).execute()
+                                    st.success("Updated!")
+                                    st.rerun()
                         with col2:
                             if st.button("Delete", key=f"delete_root_{idx}"):
-                                with duckdb.connect(DB_PATH) as con:
-                                    con.execute(f"""
-                                        DELETE FROM {REASON_TABLE}
-                                        WHERE plant=? AND date=? AND input_name=?
-                                    """, (row["plant"], row["date"], row["input_name"]))
-                                st.success("Deleted!")
+                                supabase = get_supabase_client()
+                                match = supabase.table("deviation_reasons").select("*").eq("plant", row["plant"]).eq("date", row["date"]).eq("input_name", row["input_name"]).execute()
+                                if match.data:
+                                    record_id = match.data[0]['id']
+                                    old_data = match.data[0]
+                                    supabase.table("deviation_reasons").delete().eq("id", record_id).execute()
+                                    # Audit log
+                                    supabase.table("reason_audit_log").insert({
+                                        "action_type": "delete",
+                                        "record_id": record_id,
+                                        "old_value": str(old_data),
+                                        "new_value": None,
+                                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    }).execute()
+                                    st.success("Deleted!")
+                                    st.rerun()
             else:
                 st.info("No remarks to show.")
 
