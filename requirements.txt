@@ -1,7 +1,8 @@
 streamlit
-duckdb
 pandas
+duckdb
 plotly
-openpyxl
 matplotlib
+numpy
+supabase
 xlsxwriter
