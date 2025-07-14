@@ -6,3 +6,4 @@ matplotlib
 numpy
 supabase
 xlsxwriter
+openpyxl
