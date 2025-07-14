@@ -529,7 +529,7 @@ with tab4:
 
     st.plotly_chart(fig, use_container_width=True)
     legend_html = "<br>".join(legend_items)  # This should be defined as in your block above
-    st.markdown("**Legend:**<br>" + legend_html, unsafe_allow_html=True)
+
 
     # --- Download Button (same uniform logic) ---
     download_df = avg_dev_df.rename(columns={"plant": "Plant Name", "input_name": "Equipment Name"})
@@ -891,7 +891,7 @@ with tab4:
         for reason in unique_reasons:
             color = color_map[reason]
             legend_html += f"<span style='color:{color}; font-size:22px'>⬤</span> {reason}   "
-        st.markdown("**Legend:**<br>" + legend_html, unsafe_allow_html=True)
+        
 
     # ---- Editable Log Table ----
     st.markdown("#### 📝 Reason/Comment Log (Editable & Downloadable)")

@@ -37,7 +37,7 @@ def import_dgr_to_duckdb():
     # Create DB if not exists
     fresh_db = not os.path.exists(DB_FILE)
     con = duckdb.connect(DB_FILE)
-
+    
     if fresh_db:
         con.execute(f"""
         CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
