@@ -1,18 +1,17 @@
 import duckdb
+import pandas as pd
 
-DB_PATH = "dgr_data.duckdb"
-REASON_TABLE = "deviation_reasons"
+con = duckdb.connect("dgr_data.duckdb")
 
-with duckdb.connect(DB_PATH) as con:
-    con.execute(f"""
-        CREATE TABLE IF NOT EXISTS {REASON_TABLE} (
-            plant TEXT,
-            date TEXT,
-            input_name TEXT,
-            deviation DOUBLE,
-            reason TEXT,
-            comment TEXT,
-            timestamp TEXT
-        );
-    """)
-print("Deviation Reasons table is ready.")
+query = """
+SELECT date, input_name, value
+FROM dgr_data
+WHERE plant = 'AXPPL'
+  AND value <= -99
+  AND date BETWEEN '2025-07-08' AND '2025-07-14'
+ORDER BY date, input_name;
+"""
+
+df = con.execute(query).fetchdf()
+print(df)
+con.close()

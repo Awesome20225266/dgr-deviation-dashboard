@@ -319,10 +319,12 @@ with tab2:
                             for v in dev_numeric:
                                 if v < 0:
                                     norm = min(abs(v) / max(abs(min_dev), 1), 1)
-                                    bar_colors.append(matplotlib.colors.rgb2hex(matplotlib.colormaps['Reds'](0.4 + 0.6*norm)))
+                                    if v <= -100:
+                                        norm = 1  # Max red for -100%
+                                    bar_colors.append(matplotlib.colors.rgb2hex(matplotlib.colormaps['Reds'](norm)))
                                 elif v > 0:
                                     norm = min(v / max(max_dev, 1), 1)
-                                    bar_colors.append(matplotlib.colors.rgb2hex(matplotlib.colormaps['Greens'](0.4 + 0.6*norm)))
+                                    bar_colors.append(matplotlib.colors.rgb2hex(matplotlib.colormaps['Greens'](norm)))
                                 else:
                                     bar_colors.append('#ffff66')
                         else:
@@ -348,7 +350,7 @@ with tab2:
                             plot_bgcolor='white',
                             margin=dict(t=70, l=150, r=40),
                             height=100 + 60 * len(outdf),
-                            xaxis_range=[min(dev_numeric) * 1.1 if min(dev_numeric) < 0 else min(dev_numeric), max(dev_numeric) * 1.1 if max(dev_numeric) > 0 else max(dev_numeric)]  # Dynamic padding, show all values
+                            xaxis_range=[min(-100, min(dev_numeric) * 1.1 if dev_numeric else -100), max(dev_numeric) * 1.1 if dev_numeric else 0]  # Force -100 visibility
                         )
                         st.plotly_chart(fig, use_container_width=True)
 
@@ -403,7 +405,7 @@ with tab2:
                             plot_bgcolor='white',
                             margin=dict(t=70, l=150, r=40),
                             height=100 + 60 * len(ranked),
-                            xaxis_range=[min(dev_numeric) * 1.1 if min(dev_numeric) < 0 else min(dev_numeric), max(dev_numeric) * 1.1 if max(dev_numeric) > 0 else max(dev_numeric)]  # Dynamic padding, show all values
+                            xaxis_range=[min(-100, min(dev_numeric) * 1.1 if dev_numeric else -100), max(dev_numeric) * 1.1 if dev_numeric else 0]  # Force -100 visibility
                         )
                         st.plotly_chart(fig, use_container_width=True)
 
@@ -507,7 +509,7 @@ with tab4:
                     xaxis_tickangle=-40,
                     bargap=0.18,
                     showlegend=False,
-                    yaxis_range=[avg_dev_df['Avg Deviation (%)'].min() * 1.1, 0]  # Dynamic padding for negatives, show all values
+                    yaxis_range=[min(-100, avg_dev_df['Avg Deviation (%)'].min() * 1.1), 0]  # Force -100 visibility
                 )
 
                 # Visually group by plant (optional: shaded background rectangles)
@@ -620,22 +622,22 @@ with tab4:
                                 for idx, row in df_upload.iterrows():
                                     plant = str(row.get("Plant Name", "")).strip()
                                     equip = str(row.get("Equipment Name", "")).strip()
-                                    reason = str(row.get("Reason", "")).strip()
+                                    reason = str(row.get("Reason", "")).strip().lower()  # Case-insensitive
                                     custom_reason = str(row.get("Custom Reason", "")).strip()
                                     comment = str(row.get("Comment", "")).strip()
                                     start_date_str = str(row.get("Fault Start Date", "")).strip()
                                     end_date_str = str(row.get("Fault End Date", "")).strip()
 
                                     # Handle nan/NaT as empty
-                                    if reason.lower() == 'nan':
+                                    if pd.isna(reason) or reason == 'nan':
                                         reason = ''
-                                    if custom_reason.lower() == 'nan':
+                                    if pd.isna(custom_reason) or custom_reason == 'nan':
                                         custom_reason = ''
-                                    if comment.lower() == 'nan':
+                                    if pd.isna(comment) or comment == 'nan':
                                         comment = ''
-                                    if start_date_str.lower() == 'nan':
+                                    if pd.isna(start_date_str) or start_date_str == 'nan':
                                         start_date_str = ''
-                                    if end_date_str.lower() == 'nan':
+                                    if pd.isna(end_date_str) or end_date_str == 'nan':
                                         end_date_str = ''
 
                                     # Skip if missing required fields
@@ -643,19 +645,25 @@ with tab4:
                                         skipped.append(idx + 2)
                                         continue
 
-                                    # Robust date parsing: Handle string, serial float, or Timestamp
+                                    # Robust date parsing: Handle string, serial float, Timestamp, or various formats
                                     def parse_date(date_str):
-                                        if not date_str:
+                                        if not date_str or pd.isna(date_str):
                                             return None
                                         try:
                                             # If numeric (Excel serial), convert
                                             serial = float(date_str)
                                             return (pd.to_datetime('1899-12-30') + pd.to_timedelta(serial, 'D')).date()
                                         except ValueError:
-                                            # Not numeric, try string parse
                                             pass
                                         try:
-                                            # String parse with dayfirst
+                                            # String parse with multiple formats, dayfirst, then monthfirst
+                                            for fmt in ['%Y-%m-%d', '%d-%m-%Y', '%m-%d-%Y', '%Y/%m/%d', '%d/%m/%Y', '%m/%d/%Y']:
+                                                try:
+                                                    dt = pd.to_datetime(date_str, format=fmt, errors='raise')
+                                                    return dt.date()
+                                                except ValueError:
+                                                    continue
+                                            # Fallback to pd.to_datetime with dayfirst
                                             dt = pd.to_datetime(date_str, dayfirst=True, errors='raise')
                                             return dt.date()  # Strip time if present
                                         except Exception as e:
@@ -669,19 +677,14 @@ with tab4:
                                     if not dt_start or not dt_end or dt_end < dt_start:
                                         row_errors.append((idx + 2, "Invalid or missing date range"))
                                         continue
-                                    if reason.lower() == "others" and not custom_reason:
+                                    if reason == "others" and not custom_reason:
                                         row_errors.append((idx + 2, "Custom reason required for 'Others'"))
                                         continue
 
-                                    reason_final = custom_reason if reason.lower() == "others" else reason
+                                    reason_final = custom_reason if reason == "others" else reason.capitalize()  # Capitalize for consistency
                                     # Calculate deviation
                                     try:
-                                        if "Avg Deviation (%)" in row and pd.notnull(row["Avg Deviation (%)"]):
-                                            deviation_val = float(row["Avg Deviation (%)"])
-                                        elif "deviation" in row and pd.notnull(row["deviation"]):
-                                            deviation_val = float(row["deviation"])
-                                        else:
-                                            deviation_val = 0.0
+                                        deviation_val = float(row["Avg Deviation (%)"]) if pd.notnull(row["Avg Deviation (%)"]) else 0.0
                                     except Exception:
                                         deviation_val = 0.0
                                     valid_rows.append({
@@ -816,7 +819,8 @@ with tab4:
                             xaxis_title="Date",
                             yaxis_title="Deviation (%)",
                             plot_bgcolor='white',
-                            height=500
+                            height=500,
+                            yaxis_range=[min(-100, eq_trend_df['Deviation'].min() * 1.1), 0]  # Force -100 visibility
                         )
                         st.plotly_chart(fig_trend, use_container_width=True)
                     else:
@@ -996,7 +1000,8 @@ with tab4:
                                 xgap=0.1,  # Reduce gaps
                                 ygap=0.1
                             ),
-                            xaxis_tickformat='%Y-%m-%d'  # Ensure no time in ticks
+                            xaxis_tickformat='%Y-%m-%d',  # Ensure no time in ticks
+                            legend=dict(orientation='h', yanchor="bottom", y=1.02, xanchor="right", x=1)  # Horizontal legend above plot
                         )
                         st.plotly_chart(fig, use_container_width=True)
 
@@ -1004,22 +1009,27 @@ with tab4:
 
                 # ---- Editable Log Table ----
                 st.markdown("#### 📝 Reason/Comment Log (Editable & Downloadable)")
-                if not fault_df.empty:
-                    log_display_df = fault_df.copy()
-                    log_display_df = log_display_df.rename(columns={
-                        'plant': 'Plant Name',
-                        'input_name': 'Equipment Name',
-                        'deviation': '%Deviation',
-                        'reason': 'Reason',
-                        'comment': 'Comment',
-                        'date': 'Date',
-                        'fault_start_date': 'Fault Start Date',
-                        'fault_end_date': 'Fault End Date',
-                        'timestamp': 'Tagged Timestamp'
-                    })
-                    log_display_df = log_display_df.sort_values(["Fault Start Date", "Tagged Timestamp"], ascending=[False, False])
-                    # [Requirement 2] Show Comments button
-                    if st.button("Show Comments", key="show_comments_portfolio"):
+                if "show_comments_portfolio" not in st.session_state:
+                    st.session_state["show_comments_portfolio"] = False
+
+                if st.button("Show Comments", key="show_comments_portfolio_btn"):
+                    st.session_state["show_comments_portfolio"] = True
+
+                if st.session_state["show_comments_portfolio"]:
+                    if not fault_df.empty:
+                        log_display_df = fault_df.copy()
+                        log_display_df = log_display_df.rename(columns={
+                            'plant': 'Plant Name',
+                            'input_name': 'Equipment Name',
+                            'deviation': '%Deviation',
+                            'reason': 'Reason',
+                            'comment': 'Comment',
+                            'date': 'Date',
+                            'fault_start_date': 'Fault Start Date',
+                            'fault_end_date': 'Fault End Date',
+                            'timestamp': 'Tagged Timestamp'
+                        })
+                        log_display_df = log_display_df.sort_values(["Fault Start Date", "Tagged Timestamp"], ascending=[False, False])
                         st.dataframe(log_display_df, use_container_width=True)
                         st.download_button("Download Log (Excel)", log_display_df.to_csv(index=False), "fault_log.csv", "text/csv")
 
@@ -1041,51 +1051,63 @@ with tab4:
                                             reason_final = custom_edit_reason.strip() if new_reason == "Others" else new_reason
                                             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                             supabase = get_supabase_client()
+                                            try:
+                                                match = supabase.table("deviation_reasons").select("*").eq("plant", row["Plant Name"]).eq("fault_start_date", row["Fault Start Date"]).eq("fault_end_date", row["Fault End Date"]).eq("input_name", row["Equipment Name"]).eq("timestamp", row["Tagged Timestamp"]).execute()
+                                                if match.data:
+                                                    record_id = match.data[0]['id']
+                                                    old_data = match.data[0]
+                                                    supabase.table("deviation_reasons").update({
+                                                        "reason": reason_final,
+                                                        "comment": new_comment.strip(),
+                                                        "timestamp": now_str  # Update timestamp on edit
+                                                    }).eq("id", record_id).execute()
+                                                    # Audit log
+                                                    supabase.table("reason_audit_log").insert({
+                                                        "action_type": "update",
+                                                        "record_id": record_id,
+                                                        "old_value": str(old_data),
+                                                        "new_value": str({
+                                                            "reason": reason_final,
+                                                            "comment": new_comment.strip(),
+                                                            "timestamp": now_str
+                                                        }),
+                                                        "timestamp": now_str
+                                                    }).execute()
+                                                    st.success(f"Updated successfully! New timestamp: {now_str}")
+                                                    st.session_state["show_comments_portfolio"] = True
+                                                    st.rerun()
+                                                else:
+                                                    st.error("No matching record found for update.")
+                                            except Exception as e:
+                                                st.error(f"Update failed: {e}")
+                                with col2:
+                                    if st.button("Delete", key=f"delete_port_{idx}"):
+                                        supabase = get_supabase_client()
+                                        try:
                                             match = supabase.table("deviation_reasons").select("*").eq("plant", row["Plant Name"]).eq("fault_start_date", row["Fault Start Date"]).eq("fault_end_date", row["Fault End Date"]).eq("input_name", row["Equipment Name"]).eq("timestamp", row["Tagged Timestamp"]).execute()
                                             if match.data:
                                                 record_id = match.data[0]['id']
                                                 old_data = match.data[0]
-                                                supabase.table("deviation_reasons").update({
-                                                    "reason": reason_final,
-                                                    "comment": new_comment.strip(),
-                                                    "timestamp": now_str  # Update timestamp on edit
-                                                }).eq("id", record_id).execute()
+                                                supabase.table("deviation_reasons").delete().eq("id", record_id).execute()
                                                 # Audit log
                                                 supabase.table("reason_audit_log").insert({
-                                                    "action_type": "update",
+                                                    "action_type": "delete",
                                                     "record_id": record_id,
                                                     "old_value": str(old_data),
-                                                    "new_value": str({
-                                                        "reason": reason_final,
-                                                        "comment": new_comment.strip(),
-                                                        "timestamp": now_str
-                                                    }),
-                                                    "timestamp": now_str
+                                                    "new_value": None,
+                                                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                                 }).execute()
-                                                st.success("Updated!")
+                                                st.success("Deleted successfully!")
+                                                st.session_state["show_comments_portfolio"] = True
                                                 st.rerun()
-                                with col2:
-                                    if st.button("Delete", key=f"delete_port_{idx}"):
-                                        supabase = get_supabase_client()
-                                        match = supabase.table("deviation_reasons").select("*").eq("plant", row["Plant Name"]).eq("fault_start_date", row["Fault Start Date"]).eq("fault_end_date", row["Fault End Date"]).eq("input_name", row["Equipment Name"]).eq("timestamp", row["Tagged Timestamp"]).execute()
-                                        if match.data:
-                                            record_id = match.data[0]['id']
-                                            old_data = match.data[0]
-                                            supabase.table("deviation_reasons").delete().eq("id", record_id).execute()
-                                            # Audit log
-                                            supabase.table("reason_audit_log").insert({
-                                                "action_type": "delete",
-                                                "record_id": record_id,
-                                                "old_value": str(old_data),
-                                                "new_value": None,
-                                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                            }).execute()
-                                            st.success("Deleted!")
-                                            st.rerun()
+                                            else:
+                                                st.error("No matching record found for delete.")
+                                        except Exception as e:
+                                            st.error(f"Delete failed: {e}")
                     else:
-                        st.info("Click 'Show Comments' to load the filtered log.")
+                        st.info("No log entries for this selection.")
                 else:
-                    st.info("No log entries for this selection.")
+                    st.info("Click 'Show Comments' to load the filtered log.")
 
 # --- TAB 5: VISUAL SUMMARY --- (MIGRATED TO SUPABASE)
 import plotly.graph_objects as go
@@ -1096,7 +1118,6 @@ from datetime import date
 with tab5:
     st.subheader("📊 Visual Summary: Fault Distribution & Logs")
 
-    # [Requirement 1] Check for plant and date selection
     if not plant_select or not date_start or not date_end:
         st.warning("Please select at least one plant and a date range to continue.")
     else:
@@ -1130,6 +1151,7 @@ with tab5:
                 category_orders={"reason": get_reasons()},
                 color_discrete_map=REASON_COLOR  # [Requirement 3]
             )
+            plant_reason_fig.update_layout(yaxis_range=[min(-100, plant_reason_dev['Avg Deviation (%)'].min() * 1.1), 0])  # Force -100 visibility
             st.plotly_chart(plant_reason_fig, use_container_width=True)
 
             # ---- 4. Equipment filter as Plant_Equipment ----
@@ -1150,43 +1172,57 @@ with tab5:
                 filtered_df = filtered_df[filtered_df['reason'] == reason_filter]
 
             # ---- 6. Show Comments Button [Requirement 2]
+            if "show_comments_vs" not in st.session_state:
+                st.session_state["show_comments_vs"] = False
+
             if st.button("Show Comments"):
+                st.session_state["show_comments_vs"] = True
+
+            if st.session_state["show_comments_vs"]:
                 # ---- 7. Sort log by latest date first ----
                 filtered_df = filtered_df.sort_values(["fault_start_date", "timestamp"], ascending=[False, False]).reset_index(drop=True)
 
                 # ---- 8. Bulk delete + download (side by side) ----
-                filtered_df["label"] = filtered_df.apply(
+                log_df = filtered_df.copy()
+                log_df["label"] = log_df.apply(
                     lambda row: f"{row['plant_clean']} - {row['Equipment Name']} | {row['fault_start_date']}→{row['fault_end_date']} | {row['reason']}", axis=1
                 )
-                label_to_row = {row["label"]: row for _, row in filtered_df.iterrows()}
+                label_to_row = {row["label"]: row for _, row in log_df.iterrows()}
                 selected_labels = st.multiselect(
-                    "Select comments to delete (multi-select):", filtered_df["label"].tolist(), key="vs_multiselect_delete"
+                    "Select comments to delete (multi-select):", log_df["label"].tolist(), key="vs_multiselect_delete"
                 )
                 col_bulk, col_download = st.columns([1, 2])
                 with col_bulk:
                     if st.button("Delete Selected Comments", disabled=len(selected_labels) == 0, key="vs_delete_bulk"):
                         supabase = get_supabase_client()
+                        deleted_count = 0
                         for label in selected_labels:
                             row = label_to_row[label]
-                            match = supabase.table("deviation_reasons").select("*").eq("plant", row["plant"]).eq("fault_start_date", row["fault_start_date"]).eq("fault_end_date", row["fault_end_date"]).eq("input_name", row["Equipment Name"]).eq("timestamp", row["timestamp"]).execute()
-                            if match.data:
-                                record_id = match.data[0]['id']
-                                old_data = match.data[0]
-                                supabase.table("deviation_reasons").delete().eq("id", record_id).execute()
-                                # Audit log
-                                supabase.table("reason_audit_log").insert({
-                                    "action_type": "delete",
-                                    "record_id": record_id,
-                                    "old_value": str(old_data),
-                                    "new_value": None,
-                                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                }).execute()
-                        st.success(f"Deleted {len(selected_labels)} comment(s).")
-                        st.rerun()
+                            try:
+                                match = supabase.table("deviation_reasons").select("*").eq("plant", row["plant"]).eq("fault_start_date", row["fault_start_date"]).eq("fault_end_date", row["fault_end_date"]).eq("input_name", row["Equipment Name"]).eq("timestamp", row["timestamp"]).execute()
+                                if match.data:
+                                    record_id = match.data[0]['id']
+                                    old_data = match.data[0]
+                                    supabase.table("deviation_reasons").delete().eq("id", record_id).execute()
+                                    # Audit log
+                                    supabase.table("reason_audit_log").insert({
+                                        "action_type": "delete",
+                                        "record_id": record_id,
+                                        "old_value": str(old_data),
+                                        "new_value": None,
+                                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    }).execute()
+                                    deleted_count += 1
+                            except Exception as e:
+                                st.error(f"Delete failed for {label}: {e}")
+                        if deleted_count > 0:
+                            st.success(f"Deleted {deleted_count} comment(s) successfully!")
+                            st.session_state["show_comments_vs"] = True
+                            st.rerun()
                 with col_download:
                     st.download_button(
                         "Download Visual Summary Log (Excel)",
-                        filtered_df.drop(columns=["label", "plant_clean"]).to_csv(index=False),
+                        filtered_df.drop(columns=["plant_clean"]).to_csv(index=False),
                         "visual_summary_log.csv",
                         "text/csv"
                     )
@@ -1194,7 +1230,7 @@ with tab5:
                 # ---- 9. Individual log entry (edit/delete) ----
                 REASON_LIST = get_reasons()
                 for idx, row in filtered_df.iterrows():
-                    expander_label = f"{row['plant_clean']} - {row['Equipment Name']} | {row['fault_start_date']}→{row['fault_end_date']} | %Dev: {float(row.get('deviation') or 0):.2f} | Reason: {row['reason']}"
+                    expander_label = f"{row['plant_clean']} - {row['Equipment Name']} | {row['fault_start_date']}→{row['fault_end_date']} | %Dev: {float(row.get('deviation', 0)):.2f} | Reason: {row['reason']}"
                     with st.expander(expander_label):
                         col1, col2 = st.columns(2)
                         with col1:
@@ -1203,7 +1239,7 @@ with tab5:
                             st.write(f"**Fault Start:** {row['fault_start_date']}")
                             st.write(f"**Fault End:** {row['fault_end_date']}")
                         with col2:
-                            st.write(f"**%Deviation:** {float(row.get('deviation') or 0):.2f}")
+                            st.write(f"**%Deviation:** {float(row.get('deviation', 0)):.2f}")
                             st.write(f"**Reason:** {row['reason']}")
                             st.write(f"**Comment:** {row['comment']}")
                             st.write(f"**Timestamp:** {row['timestamp']}")
@@ -1229,47 +1265,59 @@ with tab5:
                                     supabase = get_supabase_client()
                                     reason_final = custom_reason_vs.strip() if new_reason == "Others" else new_reason
                                     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    try:
+                                        match = supabase.table("deviation_reasons").select("*").eq("plant", row["plant"]).eq("fault_start_date", row["fault_start_date"]).eq("fault_end_date", row["fault_end_date"]).eq("input_name", row["Equipment Name"]).eq("timestamp", row["timestamp"]).execute()
+                                        if match.data:
+                                            record_id = match.data[0]['id']
+                                            old_data = match.data[0]
+                                            supabase.table("deviation_reasons").update({
+                                                "reason": reason_final,
+                                                "comment": new_comment.strip(),
+                                                "timestamp": now_str  # Update timestamp on edit
+                                            }).eq("id", record_id).execute()
+                                            # Audit log
+                                            supabase.table("reason_audit_log").insert({
+                                                "action_type": "update",
+                                                "record_id": record_id,
+                                                "old_value": str(old_data),
+                                                "new_value": str({
+                                                    "reason": reason_final,
+                                                    "comment": new_comment.strip(),
+                                                    "timestamp": now_str
+                                                }),
+                                                "timestamp": now_str
+                                            }).execute()
+                                            st.success(f"Updated successfully! New timestamp: {now_str}")
+                                            st.session_state["show_comments_vs"] = True
+                                            st.rerun()
+                                        else:
+                                            st.error("No matching record found for update.")
+                                    except Exception as e:
+                                        st.error(f"Update failed: {e}")
+                        with col2b:
+                            if st.button("Delete", key=f"vs_delete_{idx}"):
+                                supabase = get_supabase_client()
+                                try:
                                     match = supabase.table("deviation_reasons").select("*").eq("plant", row["plant"]).eq("fault_start_date", row["fault_start_date"]).eq("fault_end_date", row["fault_end_date"]).eq("input_name", row["Equipment Name"]).eq("timestamp", row["timestamp"]).execute()
                                     if match.data:
                                         record_id = match.data[0]['id']
                                         old_data = match.data[0]
-                                        supabase.table("deviation_reasons").update({
-                                            "reason": reason_final,
-                                            "comment": new_comment.strip(),
-                                            "timestamp": now_str  # Update timestamp on edit
-                                        }).eq("id", record_id).execute()
+                                        supabase.table("deviation_reasons").delete().eq("id", record_id).execute()
                                         # Audit log
                                         supabase.table("reason_audit_log").insert({
-                                            "action_type": "update",
+                                            "action_type": "delete",
                                             "record_id": record_id,
                                             "old_value": str(old_data),
-                                            "new_value": str({
-                                                "reason": reason_final,
-                                                "comment": new_comment.strip(),
-                                                "timestamp": now_str
-                                            }),
-                                            "timestamp": now_str
+                                            "new_value": None,
+                                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                         }).execute()
-                                        st.success("Updated!")
+                                        st.success("Deleted successfully!")
+                                        st.session_state["show_comments_vs"] = True
                                         st.rerun()
-                        with col2b:
-                            if st.button("Delete", key=f"vs_delete_{idx}"):
-                                supabase = get_supabase_client()
-                                match = supabase.table("deviation_reasons").select("*").eq("plant", row["plant"]).eq("fault_start_date", row["fault_start_date"]).eq("fault_end_date", row["fault_end_date"]).eq("input_name", row["Equipment Name"]).eq("timestamp", row["timestamp"]).execute()
-                                if match.data:
-                                    record_id = match.data[0]['id']
-                                    old_data = match.data[0]
-                                    supabase.table("deviation_reasons").delete().eq("id", record_id).execute()
-                                    # Audit log
-                                    supabase.table("reason_audit_log").insert({
-                                        "action_type": "delete",
-                                        "record_id": record_id,
-                                        "old_value": str(old_data),
-                                        "new_value": None,
-                                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                    }).execute()
-                                    st.success("Deleted!")
-                                    st.rerun()
+                                    else:
+                                        st.error("No matching record found for delete.")
+                                except Exception as e:
+                                    st.error(f"Delete failed: {e}")
             else:
                 st.info("Click 'Show Comments' to load the filtered log.")
             if filtered_df.empty:
@@ -1313,6 +1361,26 @@ with tab7:
     supabase = get_supabase_client()
     REASON_LIST = get_reasons()
 
+    # Auto-populate if empty
+    def populate_defaults():
+        new_reasons = ["AC Switch off", "AC Current Imbalance", "Cloudy Weather"]
+        REASON_COLOR.update({
+            "AC Switch off": "#FF5733",
+            "AC Current Imbalance": "#C70039",
+            "Cloudy Weather": "#900C3F"
+        })
+        all_defaults = INITIAL_REASON_LIST + new_reasons + ["Others"]
+        for r in all_defaults:
+            try:
+                supabase.table("reasons").insert({"reason_name": r}).execute()
+            except:
+                pass  # Skip if exists
+        st.success("Defaults populated!")
+        st.rerun()
+
+    if st.button("Populate Default Reasons"):
+        populate_defaults()
+
     # View All Reasons
     st.markdown("### Current Reasons")
     reasons_df = pd.DataFrame(REASON_LIST, columns=["Reason"])
@@ -1324,15 +1392,19 @@ with tab7:
     if st.button("Add Reason"):
         if not new_reason.strip():
             st.error("Reason cannot be blank.")
-        elif new_reason in REASON_LIST:
-            st.error("Reason already exists.")
         else:
             try:
-                supabase.table("reasons").insert({"reason_name": new_reason.strip()}).execute()
-                st.success(f"Added '{new_reason.strip()}' successfully!")
-                st.rerun()
+                # Fetch existing reasons for case-insensitive check
+                response = supabase.table("reasons").select("reason_name").execute()
+                existing_reasons = [r['reason_name'].strip().lower() for r in response.data]
+                if new_reason.strip().lower() in existing_reasons:
+                    st.error("Reason already exists (case-insensitive)!")
+                else:
+                    supabase.table("reasons").insert({"reason_name": new_reason.strip()}).execute()
+                    st.success(f"Added '{new_reason.strip()}' successfully!")
+                    st.rerun()
             except Exception as e:
-                st.error(f"Error adding reason: {e}. Please ensure the 'reasons' table exists in Supabase and has a column 'reason_name' of type text.")
+                st.error(f"Error adding reason: {e}. Check Supabase permissions or table schema.")
 
     # Delete a Reason
     st.markdown("### Delete Reason")
@@ -1350,7 +1422,7 @@ with tab7:
                 st.success(f"Deleted '{delete_reason}' successfully!")
                 st.rerun()
             except Exception as e:
-                st.error(f"Error deleting reason: {e}. Please ensure the 'reasons' table exists in Supabase.")
+                st.error(f"Error deleting reason: {e}. Check Supabase permissions or table schema.")
 
     # Edit a Reason
     st.markdown("### Edit Reason")
@@ -1370,4 +1442,4 @@ with tab7:
                 st.success(f"Updated '{edit_reason}' to '{updated_reason.strip()}' successfully, including historical records!")
                 st.rerun()
             except Exception as e:
-                st.error(f"Error updating reason: {e}. Please ensure the 'reasons' table exists in Supabase.")
+                st.error(f"Error updating reason: {e}. Check Supabase permissions or table schema.")
