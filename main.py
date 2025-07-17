@@ -646,32 +646,44 @@ with tab4:
                                         continue
 
                                     # Robust date parsing: Handle string, serial float, Timestamp, or various formats
+                                    import re
+
                                     def parse_date(date_str):
                                         if not date_str or pd.isna(date_str):
                                             return None
                                         try:
+                                            # If it's already a pandas Timestamp, use .date()
+                                            if isinstance(date_str, pd.Timestamp):
+                                                return date_str.date()
+                                            if isinstance(date_str, datetime):
+                                                return date_str.date()
                                             # If numeric (Excel serial), convert
-                                            serial = float(date_str)
-                                            return (pd.to_datetime('1899-12-30') + pd.to_timedelta(serial, 'D')).date()
-                                        except ValueError:
-                                            pass
-                                        try:
-                                            # String parse with multiple formats, dayfirst, then monthfirst
-                                            for fmt in ['%Y-%m-%d', '%d-%m-%Y', '%m-%d-%Y', '%Y/%m/%d', '%d/%m/%Y', '%m/%d/%Y']:
-                                                try:
-                                                    dt = pd.to_datetime(date_str, format=fmt, errors='raise')
-                                                    return dt.date()
-                                                except ValueError:
-                                                    continue
-                                            # Fallback to pd.to_datetime with dayfirst
-                                            dt = pd.to_datetime(date_str, dayfirst=True, errors='raise')
-                                            return dt.date()  # Strip time if present
+                                            try:
+                                                serial = float(date_str)
+                                                return (pd.to_datetime('1899-12-30') + pd.to_timedelta(serial, 'D')).date()
+                                            except Exception:
+                                                pass
+                                            # --- NEW: Check for ISO format ---
+                                            s = str(date_str)
+                                            if re.match(r"\d{4}-\d{2}-\d{2}$", s):
+                                                # Use pandas default (yearfirst) parsing
+                                                dt = pd.to_datetime(s, dayfirst=False, errors='raise')
+                                                return dt.date()
+                                            # Otherwise, try with dayfirst=True
+                                            dt = pd.to_datetime(s, dayfirst=True, errors='raise')
+                                            return dt.date()
                                         except Exception as e:
                                             row_errors.append((idx + 2, f"Date parse error: {e} for '{date_str}'"))
                                             return None
 
+
+
+
                                     dt_start = parse_date(start_date_str)
                                     dt_end = parse_date(end_date_str) if end_date_str else dt_start
+                                    # Debug output to see what the parser is seeing!
+                                    
+                
 
                                     # Validation
                                     if not dt_start or not dt_end or dt_end < dt_start:
@@ -697,7 +709,7 @@ with tab4:
                                         "deviation": deviation_val,
                                         "date": str(dt_start)
                                     })
-
+                                    
                                 if valid_rows:
                                     st.markdown("### Preview of Valid Rows")
                                     preview_df = pd.DataFrame(valid_rows)
@@ -976,14 +988,45 @@ with tab4:
                         limited_color_map = {r: REASON_COLOR.get(r, "#888") for r in present_reasons}
 
                         # Grid-like fault map
+                        import plotly.express as px
+
+                        # Get all unique reasons present in your data
+                        all_reasons = expanded_df['reason'].unique().tolist()
+
+                        # Combine several Plotly qualitative palettes for many unique colors
+                        color_pool = (
+                            px.colors.qualitative.Plotly +
+                            px.colors.qualitative.D3 +
+                            px.colors.qualitative.Dark24 +
+                            px.colors.qualitative.Light24 +
+                            px.colors.qualitative.Safe +
+                            px.colors.qualitative.Alphabet
+                        )
+
+                        # If too many reasons, generate even more colors
+                        def generate_hex_colors(n):
+                            import matplotlib
+                            import matplotlib.pyplot as plt
+                            cmap = plt.get_cmap('hsv', n)
+                            return [matplotlib.colors.rgb2hex(cmap(i)) for i in range(n)]
+
+                        if len(all_reasons) > len(color_pool):
+                            color_list = generate_hex_colors(len(all_reasons))
+                        else:
+                            color_list = color_pool
+
+                        # Final mapping from reason to color
+                        reason_color_map = {r: color_list[i % len(color_list)] for i, r in enumerate(all_reasons)}
+
                         fig = px.scatter(
                             expanded_df,
                             x='plot_date',
                             y='Label',
                             color='reason',
-                            color_discrete_map=limited_color_map,  # Only present colors
+                            color_discrete_map=reason_color_map,   # <--- Use the new map!
                             hover_data={'comment': True, 'deviation': ':.2f'}
                         )
+
                         fig.update_traces(marker=dict(size=16, line=dict(width=1, color='black')))
                         fig.update_layout(
                             title="Fault Map: Equipment vs Date",
@@ -991,17 +1034,9 @@ with tab4:
                             yaxis_title="Equipment",
                             plot_bgcolor='white',
                             height=400 + len(fault_df['Label'].unique()) * 10,
-                            showlegend=True,  # [Requirement 4] Add legend
-                            grid=dict(
-                                rows=1,
-                                columns=1,
-                                pattern="independent",
-                                roworder='top to bottom',
-                                xgap=0.1,  # Reduce gaps
-                                ygap=0.1
-                            ),
-                            xaxis_tickformat='%Y-%m-%d',  # Ensure no time in ticks
-                            legend=dict(orientation='h', yanchor="bottom", y=1.02, xanchor="right", x=1)  # Horizontal legend above plot
+                            showlegend=True,
+                            xaxis_tickformat='%Y-%m-%d',
+                            legend=dict(orientation='h', yanchor="bottom", y=1.02, xanchor="right", x=1)
                         )
                         st.plotly_chart(fig, use_container_width=True)
 
@@ -1141,6 +1176,31 @@ with tab5:
             # New: Stacked bar chart for plant-fault breakdown
             plant_reason_dev = summary_df.groupby(['plant', 'reason'])['deviation'].mean().reset_index()
             plant_reason_dev.columns = ['plant', 'reason', 'Avg Deviation (%)']
+            import plotly.express as px
+
+            all_reasons = plant_reason_dev['reason'].unique().tolist()
+            # Combine many palettes for extra colors
+            color_pool = (
+                px.colors.qualitative.Plotly +
+                px.colors.qualitative.D3 +
+                px.colors.qualitative.Dark24 +
+                px.colors.qualitative.Light24 +
+                px.colors.qualitative.Safe +
+                px.colors.qualitative.Alphabet
+            )
+            def generate_hex_colors(n):
+                import matplotlib
+                import matplotlib.pyplot as plt
+                cmap = plt.get_cmap('hsv', n)
+                return [matplotlib.colors.rgb2hex(cmap(i)) for i in range(n)]
+
+            if len(all_reasons) > len(color_pool):
+                color_list = generate_hex_colors(len(all_reasons))
+            else:
+                color_list = color_pool
+
+            reason_color_map = {r: color_list[i % len(color_list)] for i, r in enumerate(all_reasons)}
+
             plant_reason_fig = px.bar(
                 plant_reason_dev,
                 x='plant',
@@ -1148,9 +1208,12 @@ with tab5:
                 color='reason',
                 title="Plant-Specific Fault Breakdown",
                 barmode='stack',
-                category_orders={"reason": get_reasons()},
-                color_discrete_map=REASON_COLOR  # [Requirement 3]
+                category_orders={"reason": all_reasons},
+                color_discrete_map=reason_color_map
             )
+
+
+
             plant_reason_fig.update_layout(yaxis_range=[min(-100, plant_reason_dev['Avg Deviation (%)'].min() * 1.1), 0])  # Force -100 visibility
             st.plotly_chart(plant_reason_fig, use_container_width=True)
 
