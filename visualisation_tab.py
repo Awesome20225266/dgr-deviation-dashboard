@@ -42,11 +42,15 @@ REASON_COLOR = {
     "AC Switch off": "#FF5733", "AC Current Imbalance": "#C70039", "Cloudy Weather": "#900C3F"  # New colors
 }
 
+import math
 def get_unique_color(reason):
     if reason in REASON_COLOR:
         return REASON_COLOR[reason]
-    # Generate consistent unique color via hash
-    hash_object = hashlib.md5(reason.encode())
+    if reason is None or (isinstance(reason, float) and math.isnan(reason)):
+        reason_str = "Unknown"
+    else:
+        reason_str = str(reason)
+    hash_object = hashlib.md5(reason_str.encode())
     hash_int = int(hash_object.hexdigest(), 16)
     hue = (hash_int % 360) / 360.0
     r, g, b = colorsys.hsv_to_rgb(hue, 0.8, 0.8)  # Vibrant
