@@ -22,6 +22,8 @@ from visualisation_tab import render_visualisation_tab, get_reasons, INITIAL_REA
 import io
 import pandas as pd
 import traceback
+import datetime
+
 
 def to_excel_bytes(df, reason_options):
     output = io.BytesIO()
@@ -955,90 +957,95 @@ with tab4:
                             st.session_state["portfolio_submit_success"] = True
                             st.rerun()
 
+              # --- Fault Map & Editable Log below as before --- (MIGRATED TO SUPABASE)
                 # --- Fault Map & Editable Log below as before --- (MIGRATED TO SUPABASE)
                 st.markdown("---")
-                st.markdown("#### 📅 Visual Fault Map")
-                supabase = get_supabase_client()
-                # Fetch overlapping faults
-                fault_query = supabase.table("deviation_reasons").select("*").in_("plant", portfolio_plants).lte("fault_start_date", str(portfolio_date_end)).gte("fault_end_date", str(portfolio_date_start)).execute()
-                fault_df = pd.DataFrame(fault_query.data) if fault_query.data else pd.DataFrame()
 
-                if fault_df.empty:
-                    st.info("No tagged reasons/comments found for selection.")
-                else:
-                    fault_df['Label'] = fault_df.apply(lambda r: f"{r['plant']} - {r['input_name']}", axis=1)
-                    # Expand ranges for plot [Requirement 4] Ensure legend
-                    expanded_rows = []
-                    for _, row in fault_df.iterrows():
-                        start = pd.to_datetime(row['fault_start_date'])
-                        end = pd.to_datetime(row['fault_end_date'])
-                        for d in pd.date_range(start, end):
-                            if portfolio_date_start <= d.date() <= portfolio_date_end:  # Filter to selected date range
-                                new_row = row.copy()
-                                new_row['plot_date'] = d.strftime('%Y-%m-%d')
-                                expanded_rows.append(new_row)
-                    expanded_df = pd.DataFrame(expanded_rows)
-                    if expanded_df.empty:
-                        st.info("No tagged reasons/comments in the selected date range.")
+                with st.expander("📅 Visual Fault Map", expanded=False):  # expanded=True keeps it open by default
+                    supabase = get_supabase_client()
+                    # Fetch overlapping faults
+                    fault_query = supabase.table("deviation_reasons").select("*").in_("plant", portfolio_plants).lte("fault_start_date", str(portfolio_date_end)).gte("fault_end_date", str(portfolio_date_start)).execute()
+                    fault_df = pd.DataFrame(fault_query.data) if fault_query.data else pd.DataFrame()
+
+                    if fault_df.empty:
+                        st.info("No tagged reasons/comments found for selection.")
                     else:
-                        expanded_df['plot_date'] = pd.to_datetime(expanded_df['plot_date']).dt.strftime('%Y-%m-%d')  # Convert to date-only string
-
-                        # Limit color map to present reasons to avoid extra legend entries
-                        present_reasons = expanded_df['reason'].unique()
-                        limited_color_map = {r: REASON_COLOR.get(r, "#888") for r in present_reasons}
-
-                        # Grid-like fault map
-                        import plotly.express as px
-
-                        # Get all unique reasons present in your data
-                        all_reasons = expanded_df['reason'].unique().tolist()
-
-                        # Combine several Plotly qualitative palettes for many unique colors
-                        color_pool = (
-                            px.colors.qualitative.Plotly +
-                            px.colors.qualitative.D3 +
-                            px.colors.qualitative.Dark24 +
-                            px.colors.qualitative.Light24 +
-                            px.colors.qualitative.Safe +
-                            px.colors.qualitative.Alphabet
-                        )
-
-                        # If too many reasons, generate even more colors
-                        def generate_hex_colors(n):
-                            import matplotlib
-                            import matplotlib.pyplot as plt
-                            cmap = plt.get_cmap('hsv', n)
-                            return [matplotlib.colors.rgb2hex(cmap(i)) for i in range(n)]
-
-                        if len(all_reasons) > len(color_pool):
-                            color_list = generate_hex_colors(len(all_reasons))
+                        fault_df['Label'] = fault_df.apply(lambda r: f"{r['plant']} - {r['input_name']}", axis=1)
+                        # Expand ranges for plot [Requirement 4] Ensure legend
+                        expanded_rows = []
+                        for _, row in fault_df.iterrows():
+                            start = pd.to_datetime(row['fault_start_date'])
+                            end = pd.to_datetime(row['fault_end_date'])
+                            for d in pd.date_range(start, end):
+                                if portfolio_date_start <= d.date() <= portfolio_date_end:  # Filter to selected date range
+                                    new_row = row.copy()
+                                    new_row['plot_date'] = d.strftime('%Y-%m-%d')
+                                    expanded_rows.append(new_row)
+                        expanded_df = pd.DataFrame(expanded_rows)
+                        if expanded_df.empty:
+                            st.info("No tagged reasons/comments in the selected date range.")
                         else:
-                            color_list = color_pool
+                            expanded_df['plot_date'] = pd.to_datetime(expanded_df['plot_date']).dt.strftime('%Y-%m-%d')  # Convert to date-only string
 
-                        # Final mapping from reason to color
-                        reason_color_map = {r: color_list[i % len(color_list)] for i, r in enumerate(all_reasons)}
+                            # Limit color map to present reasons to avoid extra legend entries
+                            present_reasons = expanded_df['reason'].unique()
+                            limited_color_map = {r: REASON_COLOR.get(r, "#888") for r in present_reasons}
 
-                        fig = px.scatter(
-                            expanded_df,
-                            x='plot_date',
-                            y='Label',
-                            color='reason',
-                            color_discrete_map=reason_color_map,   # <--- Use the new map!
-                            hover_data={'comment': True, 'deviation': ':.2f'}
-                        )
+                            # Grid-like fault map
+                            import plotly.express as px
 
-                        fig.update_traces(marker=dict(size=16, line=dict(width=1, color='black')))
-                        fig.update_layout(
-                            title="Fault Map: Equipment vs Date",
-                            xaxis_title="Date",
-                            yaxis_title="Equipment",
-                            plot_bgcolor='white',
-                            height=400 + len(fault_df['Label'].unique()) * 10,
-                            showlegend=True,
-                            xaxis_tickformat='%Y-%m-%d',
-                            legend=dict(orientation='h', yanchor="bottom", y=1.02, xanchor="right", x=1)
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
+                            # Get all unique reasons present in your data
+                            all_reasons = expanded_df['reason'].unique().tolist()
+
+                            # Combine several Plotly qualitative palettes for many unique colors
+                            color_pool = (
+                                px.colors.qualitative.Plotly +
+                                px.colors.qualitative.D3 +
+                                px.colors.qualitative.Dark24 +
+                                px.colors.qualitative.Light24 +
+                                px.colors.qualitative.Safe +
+                                px.colors.qualitative.Alphabet
+                            )
+
+                            # If too many reasons, generate even more colors
+                            def generate_hex_colors(n):
+                                import matplotlib
+                                import matplotlib.pyplot as plt
+                                cmap = plt.get_cmap('hsv', n)
+                                return [matplotlib.colors.rgb2hex(cmap(i)) for i in range(n)]
+
+                            if len(all_reasons) > len(color_pool):
+                                color_list = generate_hex_colors(len(all_reasons))
+                            else:
+                                color_list = color_pool
+
+                            # Final mapping from reason to color
+                            reason_color_map = {r: color_list[i % len(color_list)] for i, r in enumerate(all_reasons)}
+
+                            fig = px.scatter(
+                                expanded_df,
+                                x='plot_date',
+                                y='Label',
+                                color='reason',
+                                color_discrete_map=reason_color_map,   # <--- Use the new map!
+                                hover_data={'comment': True, 'deviation': ':.2f'}
+                            )
+
+                            fig.update_traces(marker=dict(size=16, line=dict(width=1, color='black')))
+                            fig.update_layout(
+                                title="Fault Map: Equipment vs Date",
+                                xaxis_title="Date",
+                                yaxis_title="Equipment",
+                                plot_bgcolor='white',
+                                height=400 + len(fault_df['Label'].unique()) * 10,
+                                showlegend=True,
+                                xaxis_tickformat='%Y-%m-%d',
+                                legend=dict(orientation='h', yanchor="bottom", y=1.02, xanchor="right", x=1)
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+
+
+
 
                         # Remove dynamic legend HTML as per user request
 
@@ -1065,8 +1072,53 @@ with tab4:
                             'timestamp': 'Tagged Timestamp'
                         })
                         log_display_df = log_display_df.sort_values(["Fault Start Date", "Tagged Timestamp"], ascending=[False, False])
+                        import collections
+                        import pandas as pd
+
+                        supabase = get_supabase_client()
+
+                        def get_history_reason_str(plant, equipment):
+                            try:
+                                rows = supabase.table("deviation_reasons").select("reason, fault_start_date, fault_end_date") \
+                                    .eq("plant", plant).eq("input_name", equipment).execute().data
+                                if not rows:
+                                    return ""
+                                reason_counts = collections.defaultdict(int)
+                                for r in rows:
+                                    reason = r.get("reason")
+                                    if not reason:
+                                        continue
+                                    try:
+                                        start = pd.to_datetime(r.get("fault_start_date")).date()
+                                    except:
+                                        continue
+                                    try:
+                                        end = pd.to_datetime(r.get("fault_end_date")).date()
+                                    except:
+                                        end = start
+                                    day_count = (end - start).days + 1 if end >= start else 0
+                                    reason_counts[reason] += max(day_count, 0)
+                                return ", ".join(f"{reason} ({count})" for reason, count in reason_counts.items())
+                            except Exception as e:
+                                return "Error"
+
+                        history_reason_col = []
+                        for idx, row in log_display_df.iterrows():
+                            plant = row["Plant Name"]
+                            equipment = row["Equipment Name"]
+                            hist_str = get_history_reason_str(plant, equipment)
+                            history_reason_col.append(hist_str)
+
+                        # Insert History Reason after 'Reason' column
+                        insert_pos = log_display_df.columns.get_loc("Reason") + 1
+                        log_display_df.insert(insert_pos, "History Reason", history_reason_col)
+
                         st.dataframe(log_display_df, use_container_width=True)
                         st.download_button("Download Log (Excel)", log_display_df.to_csv(index=False), "fault_log.csv", "text/csv")
+
+
+
+
 
                         # Individual edit/delete
                         REASON_LIST = get_reasons()
