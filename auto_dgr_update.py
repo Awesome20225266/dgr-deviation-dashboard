@@ -126,21 +126,26 @@ def import_dgr_to_duckdb():
 
 def git_push():
     print("Running Git push script...")
-    try:
-        subprocess.run(["git", "add", "."], check=True)
-        subprocess.run(["git", "commit", "-m", GIT_COMMIT_MSG], check=True)
-        subprocess.run(["git", "push", "origin", "main"], check=True)
-        print("✅ Git push completed successfully.")
-    except subprocess.CalledProcessError as e:
-        error_msg = str(e)
-        if "nothing to commit" in error_msg:
-            print("⚠️ No changes to commit.")
-            try:
-                subprocess.run(["git", "push", "origin", "main"], check=True)
-                print("✅ Git push completed successfully.")
-            except Exception as push_e:
-                print(f"❌ Git push failed: {push_e}")
-        else:
+
+    # Check for unstaged or staged changes, respecting .gitignore (so DGR_Backup is always ignored)
+    subprocess.run(["git", "add", "."], check=True)
+
+    # Check if there are any staged changes to commit
+    result = subprocess.run(["git", "diff", "--cached", "--quiet"])
+    if result.returncode == 0:
+        # No changes to commit
+        print("⚠️ No changes to commit.")
+        try:
+            subprocess.run(["git", "push", "origin", "main"], check=True)
+            print("✅ Git push completed successfully.")
+        except Exception as push_e:
+            print(f"❌ Git push failed: {push_e}")
+    else:
+        try:
+            subprocess.run(["git", "commit", "-m", GIT_COMMIT_MSG], check=True)
+            subprocess.run(["git", "push", "origin", "main"], check=True)
+            print("✅ Git push completed successfully.")
+        except subprocess.CalledProcessError as e:
             print(f"❌ Git error: {e}")
 
 def main():
