@@ -3,12 +3,13 @@ import subprocess
 import pandas as pd
 import duckdb
 from datetime import datetime
+import time
 
 MAPPING_FILE = "Mapping Sheet.xlsx"
 DGR_FOLDER = "DGR_Backup"
 DB_FILE = "dgr_data.duckdb"
 TABLE_NAME = "dgr_data"
-GIT_COMMIT_MSG = "Auto update DGR data and scripts"
+GIT_COMMIT_MSG = "Auto update DGR data and scripts (excluding DGR_Backup)"
 
 def clean_value(v):
     if pd.isnull(v):
@@ -126,27 +127,65 @@ def import_dgr_to_duckdb():
 
 def git_push():
     print("Running Git push script...")
-
-    # Check for unstaged or staged changes, respecting .gitignore (so DGR_Backup is always ignored)
-    subprocess.run(["git", "add", "."], check=True)
-
-    # Check if there are any staged changes to commit
-    result = subprocess.run(["git", "diff", "--cached", "--quiet"])
-    if result.returncode == 0:
-        # No changes to commit
-        print("⚠️ No changes to commit.")
+    attempt = 1
+    while True:
         try:
-            subprocess.run(["git", "push", "origin", "main"], check=True)
-            print("✅ Git push completed successfully.")
-        except Exception as push_e:
-            print(f"❌ Git push failed: {push_e}")
-    else:
-        try:
-            subprocess.run(["git", "commit", "-m", GIT_COMMIT_MSG], check=True)
-            subprocess.run(["git", "push", "origin", "main"], check=True)
-            print("✅ Git push completed successfully.")
+            # Stage all changes (including deletions, honoring .gitignore)
+            subprocess.run(["git", "add", "-A"], check=True)
+
+            # Check for local uncommitted changes
+            diff_result = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
+            has_local_changes = diff_result.stdout.strip() != ""
+
+            # If local changes exist, stash them before pulling
+            stashed = False
+            if has_local_changes:
+                print("⚠️ Local uncommitted changes detected. Stashing before pulling remote updates...")
+                subprocess.run(["git", "stash"], check=True)
+                stashed = True
+
+            # Pull remote changes
+            print(f"🔄 Attempt {attempt}: Pulling remote changes...")
+            pull = subprocess.run(["git", "pull", "--no-edit", "origin", "main"])
+            if pull.returncode != 0:
+                print("❌ Git pull failed. If you see merge conflicts, resolve them and re-run the script.")
+                return
+
+            # If stashed, pop the stash, and re-add all changes
+            if stashed:
+                print("🔄 Applying stashed changes...")
+                pop = subprocess.run(["git", "stash", "pop"])
+                if pop.returncode != 0:
+                    print("\n❗ Merge conflict occurred while applying your local changes after stash pop.")
+                    print("👉 Please open the conflicted files, resolve manually, and then run:")
+                    print("     git add <conflicted_file>")
+                    print("     git commit -m 'Resolve merge conflict after stash pop'")
+                    print("     git push origin main")
+                    print("Aborting automated push for your safety.\n")
+                    return
+                # *** Key fix: stage all changes again after stash pop ***
+                subprocess.run(["git", "add", "-A"], check=True)
+
+            # Now commit if there are any changes after merging
+            result = subprocess.run(["git", "diff", "--cached", "--quiet"])
+            if result.returncode == 0:
+                print("⚠️ No changes to commit.")
+            else:
+                subprocess.run(["git", "commit", "-m", GIT_COMMIT_MSG], check=True)
+
+            print(f"🔼 Attempt {attempt}: Pushing to remote...")
+            push = subprocess.run(["git", "push", "origin", "main"])
+            if push.returncode == 0:
+                print("✅ Git push completed successfully.")
+                break
+            else:
+                print("⚠️ Push was not successful—repository may have changed on remote. Will pull again and retry...")
+                attempt += 1
+                time.sleep(2)  # Small delay to avoid hammering server
+
         except subprocess.CalledProcessError as e:
             print(f"❌ Git error: {e}")
+            break
 
 def main():
     print(f"=== DGR DB (incremental) + Git update started at {datetime.now()} ===")

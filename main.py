@@ -23,6 +23,8 @@ import io
 import pandas as pd
 import traceback
 import datetime
+import openpyxl
+import re
 
 
 def to_excel_bytes(df, reason_options):
@@ -434,17 +436,12 @@ with tab2:
                         if dev_numeric:
                             min_dev = min(dev_numeric)
                             max_dev = max(dev_numeric)
-                            for v in dev_numeric:
-                                if v < 0:
-                                    norm = min(abs(v) / max(abs(min_dev), 1), 1)
-                                    if v <= -100:
-                                        norm = 1  # Max red for -100%
-                                    bar_colors.append(matplotlib.colors.rgb2hex(matplotlib.colormaps['Reds'](norm)))
-                                elif v > 0:
-                                    norm = min(v / max(max_dev, 1), 1)
-                                    bar_colors.append(matplotlib.colors.rgb2hex(matplotlib.colormaps['Greens'](norm)))
-                                else:
-                                    bar_colors.append('#ffff66')
+                            if max_dev == min_dev:
+                                norm_values = [0.5] * len(dev_numeric)
+                            else:
+                                norm_values = [(v - min_dev) / (max_dev - min_dev) for v in dev_numeric]
+                            cmap = matplotlib.colormaps['RdYlGn']
+                            bar_colors = [matplotlib.colors.rgb2hex(cmap(norm)) for norm in norm_values]
                         else:
                             bar_colors = None
 
@@ -458,17 +455,17 @@ with tab2:
                             insidetextanchor='end',
                             hovertemplate="Equipment: %{y}<br>Deviation: %{x:.2f}%<extra></extra>"
                         ))
-                        fig.update_yaxes(autorange="reversed")
+                        fig.update_yaxes(range=[-0.5, len(outdf)-0.5], autorange="reversed")
                         fig.update_layout(
                             title="🏆 Equipment Ranking by Deviation (Red = Worst, Green = Best)",
                             xaxis_title="Deviation (%)",
                             yaxis_title="Equipment",
                             font=dict(family="Segoe UI, Arial", size=16),
-                            xaxis=dict(tickformat=".2f"),
+                            xaxis=dict(tickformat=".2f", autorange=True),
+                            yaxis=dict(autorange=True),
                             plot_bgcolor='white',
                             margin=dict(t=70, l=150, r=40),
-                            height=100 + 60 * len(outdf),
-                            xaxis_range=[min(-100, min(dev_numeric) * 1.1 if dev_numeric else -100), max(dev_numeric) * 1.1 if dev_numeric else 0]  # Force -100 visibility
+                            height=100 + 60 * len(outdf)
                         )
                         st.plotly_chart(fig, use_container_width=True)
 
@@ -517,17 +514,17 @@ with tab2:
                             insidetextanchor='end',
                             hovertemplate="Plant: %{y}<br>Deviation: %{x:.2f}%<extra></extra>"
                         ))
-                        fig.update_yaxes(autorange="reversed")
+                        fig.update_yaxes(range=[-0.5, len(ranked)-0.5], autorange="reversed")
                         fig.update_layout(
                             title="🏆 Plant Ranking by |Normalised Deviation| (Lower ABS = Greener, Higher ABS = Redder)",
                             xaxis_title="Normalised Deviation (%)",
                             yaxis_title="Plant",
                             font=dict(family="Segoe UI, Arial", size=16),
-                            xaxis=dict(tickformat=".2f"),
+                            xaxis=dict(tickformat=".2f", autorange=True),
+                            yaxis=dict(autorange=True),
                             plot_bgcolor='white',
                             margin=dict(t=70, l=150, r=40),
-                            height=100 + 60 * len(ranked),
-                            xaxis_range=[min(-100, min(dev_numeric) * 1.1 if dev_numeric else -100), max(dev_numeric) * 1.1 if dev_numeric else 0]  # Force -100 visibility
+                            height=100 + 60 * len(ranked)
                         )
                         st.plotly_chart(fig, use_container_width=True)
 
@@ -612,6 +609,16 @@ with tab4:
 
                 # Assign color per bar by plant
                 bar_colors = avg_dev_df['plant'].map(plant_color_map)
+                if len(portfolio_plants) == 1:
+                    dev_values = avg_dev_df['Avg Deviation (%)'].tolist()
+                    min_dev = min(dev_values)
+                    max_dev = max(dev_values)
+                    if max_dev == min_dev:
+                        norm_values = [0.5] * len(dev_values)
+                    else:
+                        norm_values = [(v - min_dev) / (max_dev - min_dev) for v in dev_values]
+                    cmap = matplotlib.colormaps['RdYlGn']
+                    bar_colors = [matplotlib.colors.rgb2hex(cmap(norm)) for norm in norm_values]
 
                 fig = go.Figure(
                     go.Bar(
@@ -636,7 +643,8 @@ with tab4:
                     xaxis_tickangle=-40,
                     bargap=0.18,
                     showlegend=False,
-                    yaxis_range=[min(-100, avg_dev_df['Avg Deviation (%)'].min() * 1.1), 0]  # Force -100 visibility
+                    xaxis=dict(autorange=True),
+                    yaxis=dict(autorange=True)
                 )
 
                 # Visually group by plant (optional: shaded background rectangles)
@@ -676,6 +684,14 @@ with tab4:
                         )
                     ]
                 )
+
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Average Deviation", f"{avg_dev_df['Avg Deviation (%)'].mean():.3f}%", delta=f"{(avg_dev_df['Avg Deviation (%)'].mean() - threshold):.3f}% from threshold", delta_color="inverse")
+                with col2:
+                    st.metric("Worst Deviation", f"{avg_dev_df['Avg Deviation (%)'].min():.3f}%", delta=f"{(avg_dev_df['Avg Deviation (%)'].min() - threshold):.3f}% from threshold", delta_color="inverse")
+                with col3:
+                    st.metric("Number of Equipments", len(avg_dev_df))
 
                 st.plotly_chart(fig, use_container_width=True)
 
@@ -720,150 +736,169 @@ with tab4:
 
                     **Note:** For date range, one record per range will be tagged in DB. If only Fault Start Date is filled, only that date will be tagged.
                 """)
+                if "upload_key" not in st.session_state:
+                    st.session_state.upload_key = 0
 
-                    uploaded_file = st.file_uploader(
-                        "Upload filled deviation file (xls, xlsx, csv)", 
-                        type=['xls', 'xlsx', 'csv'], 
-                        key="bulk_upload_deviation"
-                    )
+                uploaded_file = st.file_uploader(
+                    "Upload filled deviation file (xls, xlsx, csv)", 
+                    type=['xls', 'xlsx', 'csv'], 
+                    key=f"bulk_upload_deviation_{st.session_state.upload_key}"
+                )
 
-                    if uploaded_file:
-                        try:
-                            if uploaded_file.name.endswith('.csv'):
-                                df_upload = pd.read_csv(uploaded_file)
-                            else:
-                                df_upload = pd.read_excel(uploaded_file, dtype={'Fault Start Date': str, 'Fault End Date': str})  # Force date cols as str to avoid auto-parsing
+                if uploaded_file:
+                    try:
+                        if uploaded_file.name.endswith('.csv'):
+                            df_upload = pd.read_csv(uploaded_file)
+                        else:
+                            uploaded_file.seek(0)
+                            wb = openpyxl.load_workbook(uploaded_file, data_only=True)
+                            ws = wb.active
+                            data = [[cell.value for cell in row] for row in ws.rows if any(cell.value for cell in row)]
+                            cols = data[0]
+                            data_rows = data[1:]
+                            df_upload = pd.DataFrame(data_rows, columns=cols)
 
-                            # Clean columns and check
-                            required_cols = [
-                                "Plant Name", "Equipment Name", "Avg Deviation (%)",
-                                "Fault Start Date", "Fault End Date", "Reason", "Custom Reason", "Comment"
-                            ]
-                            missing_cols = [c for c in required_cols if c not in df_upload.columns]
-                            if missing_cols:
-                                st.error(f"Missing columns in upload: {missing_cols}")
-                            else:
-                                valid_rows = []
-                                skipped = []
-                                row_errors = []
-                                for idx, row in df_upload.iterrows():
-                                    plant = str(row.get("Plant Name", "")).strip()
-                                    equip = str(row.get("Equipment Name", "")).strip()
-                                    reason = str(row.get("Reason", "")).strip().lower()  # Case-insensitive
-                                    custom_reason = str(row.get("Custom Reason", "")).strip()
-                                    comment = str(row.get("Comment", "")).strip()
-                                    start_date_str = str(row.get("Fault Start Date", "")).strip()
-                                    end_date_str = str(row.get("Fault End Date", "")).strip()
+                        # Clean columns and check
+                        required_cols = [
+                            "Plant Name", "Equipment Name", "Avg Deviation (%)",
+                            "Fault Start Date", "Fault End Date", "Reason", "Custom Reason", "Comment"
+                        ]
+                        missing_cols = [c for c in required_cols if c not in df_upload.columns]
+                        if missing_cols:
+                            st.error(f"Missing columns in upload: {missing_cols}")
+                        else:
+                            valid_rows = []
+                            skipped = []
+                            row_errors = []
+                            for idx, row in df_upload.iterrows():
+                                plant = str(row.get("Plant Name", "")).strip()
+                                equip = str(row.get("Equipment Name", "")).strip()
+                                reason = str(row.get("Reason", "")).strip().lower()  # Case-insensitive
+                                custom_reason = str(row.get("Custom Reason", "")).strip()
+                                comment = str(row.get("Comment", "")).strip()
+                                start_date_str = str(row.get("Fault Start Date", "")).strip()
+                                end_date_str = str(row.get("Fault End Date", "")).strip()
 
-                                    # Handle nan/NaT as empty
-                                    if pd.isna(reason) or reason == 'nan':
-                                        reason = ''
-                                    if pd.isna(custom_reason) or custom_reason == 'nan':
-                                        custom_reason = ''
-                                    if pd.isna(comment) or comment == 'nan':
-                                        comment = ''
-                                    if pd.isna(start_date_str) or start_date_str == 'nan':
-                                        start_date_str = ''
-                                    if pd.isna(end_date_str) or end_date_str == 'nan':
-                                        end_date_str = ''
+                                # Handle nan/NaT as empty
+                                if pd.isna(reason) or reason == 'nan':
+                                    reason = ''
+                                if pd.isna(custom_reason) or custom_reason == 'nan':
+                                    custom_reason = ''
+                                if pd.isna(comment) or comment == 'nan':
+                                    comment = ''
+                                if pd.isna(start_date_str) or start_date_str == 'nan':
+                                    start_date_str = ''
+                                if pd.isna(end_date_str) or end_date_str == 'nan':
+                                    end_date_str = ''
 
-                                    # Skip if missing required fields
-                                    if not plant or not equip or not reason or not comment or not start_date_str:
-                                        skipped.append(idx + 2)
-                                        continue
+                                # Skip if missing required fields
+                                if not plant or not equip or not reason or not comment or not start_date_str:
+                                    skipped.append(idx + 2)
+                                    continue
 
-                                    # Robust date parsing: Handle string, serial float, Timestamp, or various formats
-                                    import re
-
-                                    def parse_date(date_str):
-                                        if not date_str or pd.isna(date_str):
-                                            return None
-                                        try:
-                                            # If it's already a pandas Timestamp, use .date()
-                                            if isinstance(date_str, pd.Timestamp):
-                                                return date_str.date()
-                                            if isinstance(date_str, datetime):
-                                                return date_str.date()
-                                            # If numeric (Excel serial), convert
-                                            try:
-                                                serial = float(date_str)
-                                                return (pd.to_datetime('1899-12-30') + pd.to_timedelta(serial, 'D')).date()
-                                            except Exception:
-                                                pass
-                                            # --- NEW: Check for ISO format ---
-                                            s = str(date_str)
-                                            if re.match(r"\d{4}-\d{2}-\d{2}$", s):
-                                                # Use pandas default (yearfirst) parsing
-                                                dt = pd.to_datetime(s, dayfirst=False, errors='raise')
-                                                return dt.date()
-                                            # Otherwise, try with dayfirst=True
-                                            dt = pd.to_datetime(s, dayfirst=True, errors='raise')
-                                            return dt.date()
-                                        except Exception as e:
-                                            row_errors.append((idx + 2, f"Date parse error: {e} for '{date_str}'"))
-                                            return None
-
-
-
-
-                                    dt_start = parse_date(start_date_str)
-                                    dt_end = parse_date(end_date_str) if end_date_str else dt_start
-                                    # Debug output to see what the parser is seeing!
-                                    
-                
-
-                                    # Validation
-                                    if not dt_start or not dt_end or dt_end < dt_start:
-                                        row_errors.append((idx + 2, "Invalid or missing date range"))
-                                        continue
-                                    if reason == "others" and not custom_reason:
-                                        row_errors.append((idx + 2, "Custom reason required for 'Others'"))
-                                        continue
-
-                                    reason_final = custom_reason if reason == "others" else reason.capitalize()  # Capitalize for consistency
-                                    # Calculate deviation
+                                # Robust date parsing
+                                def parse_date(date_str):
+                                    if not date_str:
+                                        return None
                                     try:
-                                        deviation_val = float(row["Avg Deviation (%)"]) if pd.notnull(row["Avg Deviation (%)"]) else 0.0
-                                    except Exception:
-                                        deviation_val = 0.0
-                                    valid_rows.append({
-                                        "plant": plant,
-                                        "input_name": equip,
-                                        "fault_start_date": str(dt_start),
-                                        "fault_end_date": str(dt_end),
-                                        "reason": reason_final,
-                                        "comment": comment,
-                                        "deviation": deviation_val,
-                                        "date": str(dt_start)
-                                    })
-                                    
-                                if valid_rows:
-                                    st.markdown("### Preview of Valid Rows")
-                                    preview_df = pd.DataFrame(valid_rows)
-                                    # Format deviation to 3 decimals
-                                    preview_df["deviation"] = preview_df["deviation"].apply(lambda x: f"{x:.3f}")
-                                    st.dataframe(preview_df)
+                                        if isinstance(date_str, datetime):
+                                            return date_str.strftime('%Y-%m-%d')
+                                        try:
+                                            serial = float(date_str)
+                                            dt = pd.to_datetime('1899-12-30') + pd.to_timedelta(serial, 'D')
+                                            return dt.strftime('%Y-%m-%d')
+                                        except ValueError:
+                                            pass
+                                        s = str(date_str).strip()
+                                        if re.match(r"\d{4}-\d{2}-\d{2}$", s):
+                                            dt = pd.to_datetime(s, format='%Y-%m-%d')
+                                            return dt.strftime('%Y-%m-%d')
+                                        if re.match(r"\d{2}-\d{2}-\d{4}$", s):
+                                            parts = s.split('-')
+                                            a, b, y = int(parts[0]), int(parts[1]), int(parts[2])
+                                            if a > 31 or b > 31 or y < 1000:
+                                                raise ValueError("Invalid date")
+                                            if b > 12:
+                                                dt = pd.to_datetime(f"{a}-{b}-{y}", format='%m-%d-%Y')  # MM-DD-YYYY
+                                            elif a > 12:
+                                                dt = pd.to_datetime(f"{b}-{a}-{y}", format='%m-%d-%Y')  # swap for DD-MM-YYYY
+                                            else:
+                                                dt = pd.to_datetime(s, dayfirst=True)  # ambiguous, default DD-MM
+                                            return dt.strftime('%Y-%m-%d')
+                                        dt = pd.to_datetime(s, errors='raise')
+                                        return dt.strftime('%Y-%m-%d')
+                                    except Exception as e:
+                                        row_errors.append((idx + 2, f"Date parse error: {e} for '{date_str}'"))
+                                        return None
 
-                                    if st.button("Submit Valid Rows"):
-                                        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                        n_processed = 0
-                                        n_failed = 0
-                                        failed_rows = []
-                                        supabase = get_supabase_client()
-                                        for entry in valid_rows:
-                                            try:
-                                                match = supabase.table("deviation_reasons").select("*").eq("plant", entry["plant"]).eq("input_name", entry["input_name"]).eq("fault_start_date", entry["fault_start_date"]).eq("fault_end_date", entry["fault_end_date"]).execute()
-                                                if match.data:
-                                                    # Update existing
-                                                    record_id = match.data[0]['id']
-                                                    old_data = match.data[0]
-                                                    supabase.table("deviation_reasons").update({
-                                                        "reason": entry["reason"],
-                                                        "comment": entry["comment"],
-                                                        "deviation": entry["deviation"],
-                                                        "timestamp": now_str,
-                                                        "date": entry["date"]
-                                                    }).eq("id", record_id).execute()
+                                dt_start_str = parse_date(start_date_str)
+                                dt_end_str = parse_date(end_date_str) if end_date_str else dt_start_str
+
+                                # Validation
+                                if not dt_start_str or not dt_end_str:
+                                    continue
+                                dt_start = datetime.strptime(dt_start_str, '%Y-%m-%d').date()
+                                dt_end = datetime.strptime(dt_end_str, '%Y-%m-%d').date()
+                                if dt_end < dt_start:
+                                    row_errors.append((idx + 2, "End date before start date"))
+                                    continue
+                                if reason == "others" and not custom_reason:
+                                    row_errors.append((idx + 2, "Custom reason required for 'Others'"))
+                                    continue
+
+                                reason_final = custom_reason if reason == "others" else reason.capitalize()  # Capitalize for consistency
+                                # Calculate deviation
+                                try:
+                                    deviation_val = float(row["Avg Deviation (%)"]) if pd.notnull(row["Avg Deviation (%)"]) else 0.0
+                                except Exception:
+                                    deviation_val = 0.0
+                                valid_rows.append({
+                                    "plant": plant,
+                                    "input_name": equip,
+                                    "fault_start_date": dt_start_str,
+                                    "fault_end_date": dt_end_str,
+                                    "reason": reason_final,
+                                    "comment": comment,
+                                    "deviation": deviation_val,
+                                    "date": dt_start_str
+                                })
+                                
+                            if valid_rows:
+                                st.markdown("### Preview of Valid Rows")
+                                preview_df = pd.DataFrame(valid_rows)
+                                # Format deviation to 3 decimals
+                                preview_df["deviation"] = preview_df["deviation"].apply(lambda x: f"{x:.3f}")
+                                st.dataframe(preview_df)
+
+                                if st.button("Submit Valid Rows"):
+                                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    n_processed = 0
+                                    n_failed = 0
+                                    failed_rows = []
+                                    supabase = get_supabase_client()
+                                    for entry in valid_rows:
+                                        try:
+                                            match = supabase.table("deviation_reasons").select("*") \
+                                                .eq("plant", entry["plant"]) \
+                                                .eq("input_name", entry["input_name"]) \
+                                                .eq("fault_start_date", entry["fault_start_date"]) \
+                                                .eq("fault_end_date", entry["fault_end_date"]).execute()
+                                            if match.data:
+                                                # Update existing
+                                                record_id = match.data[0]['id']
+                                                old_data = match.data[0]
+                                                resp = supabase.table("deviation_reasons").update({
+                                                    "reason": entry["reason"],
+                                                    "comment": entry["comment"],
+                                                    "deviation": entry["deviation"],
+                                                    "timestamp": now_str,
+                                                    "date": entry["date"]
+                                                }).eq("id", record_id).execute()
+                                                if hasattr(resp, "error") and resp.error:
+                                                    st.error(f"Update error: {resp.error}")
+                                                    n_failed += 1
+                                                    failed_rows.append(entry)
+                                                else:
                                                     # Audit log
                                                     supabase.table("reason_audit_log").insert({
                                                         "action_type": "update",
@@ -878,51 +913,54 @@ with tab4:
                                                         "timestamp": now_str
                                                     }).execute()
                                                     n_processed += 1
+                                            else:
+                                                # Insert new
+                                                full_entry = entry.copy()
+                                                full_entry["timestamp"] = now_str
+                                                resp = supabase.table("deviation_reasons").insert(full_entry).execute()
+                                                if hasattr(resp, "error") and resp.error:
+                                                    st.error(f"Insertion error: {resp.error}")
+                                                    n_failed += 1
+                                                    failed_rows.append(entry)
                                                 else:
-                                                    # Insert new
-                                                    full_entry = entry.copy()
-                                                    full_entry["timestamp"] = now_str
-                                                    resp = supabase.table("deviation_reasons").insert(full_entry).execute()
-                                                    if resp.data:
-                                                        n_processed += 1
-                                                        # Audit log
-                                                        supabase.table("reason_audit_log").insert({
-                                                            "action_type": "insert",
-                                                            "record_id": None,
-                                                            "old_value": None,
-                                                            "new_value": str(full_entry),
-                                                            "timestamp": now_str
-                                                        }).execute()
-                                                    else:
-                                                        n_failed += 1
-                                                        failed_rows.append(entry)
-                                            except Exception as e:
-                                                n_failed += 1
-                                                failed_rows.append(entry)
-                                                st.warning(f"Failed to process row: {e}")
-                                        if n_processed > 0:
-                                            st.success(f"✅ Processed {n_processed} records (inserted/updated)!")
-                                        if n_failed > 0:
-                                            st.error(f"Failed to process {n_failed} records. See logs.")
-                                        if skipped:
-                                            st.info(f"Skipped {len(skipped)} blank rows: rows {skipped}")
-                                        if row_errors:
-                                            for row_num, err in row_errors:
-                                                st.error(f"Row {row_num}: {err}")
-                                        if n_processed == 0 and row_errors:
-                                            st.error("All rows failed validation.")
-                                        # Auto-reset
-                                        st.rerun()
-                                else:
-                                    st.warning("No valid rows found in the uploaded file.")
+                                                    # Audit log
+                                                    supabase.table("reason_audit_log").insert({
+                                                        "action_type": "insert",
+                                                        "record_id": None,
+                                                        "old_value": None,
+                                                        "new_value": str(full_entry),
+                                                        "timestamp": now_str
+                                                    }).execute()
+                                                    n_processed += 1
+                                        except Exception as e:
+                                            n_failed += 1
+                                            failed_rows.append(entry)
+                                            st.warning(f"Failed to process row: {e}")
+
+                                    if n_processed > 0:
+                                        st.success(f"✅ Processed {n_processed} records (inserted/updated)!")
+                                        st.session_state.upload_key += 1
+                                    if n_failed > 0:
+                                        st.error(f"Failed to process {n_failed} records. See logs.")
                                     if skipped:
                                         st.info(f"Skipped {len(skipped)} blank rows: rows {skipped}")
                                     if row_errors:
                                         for row_num, err in row_errors:
                                             st.error(f"Row {row_num}: {err}")
+                                    if n_processed == 0 and row_errors:
                                         st.error("All rows failed validation.")
-                        except Exception as e:
-                            st.error(f"Error processing upload: {e}")
+                                    # Auto-reset
+                                    st.rerun()
+                            else:
+                                st.warning("No valid rows found in the uploaded file.")
+                                if skipped:
+                                    st.info(f"Skipped {len(skipped)} blank rows: rows {skipped}")
+                                if row_errors:
+                                    for row_num, err in row_errors:
+                                        st.error(f"Row {row_num}: {err}")
+                                    st.error("All rows failed validation.")
+                    except Exception as e:
+                        st.error(f"Error processing upload: {e}")
 
                 # --- Trend for these equipment ---
                 st.markdown("---")
@@ -961,7 +999,8 @@ with tab4:
                             yaxis_title="Deviation (%)",
                             plot_bgcolor='white',
                             height=500,
-                            yaxis_range=[min(-100, eq_trend_df['Deviation'].min() * 1.1), 0]  # Force -100 visibility
+                            xaxis=dict(autorange=True),
+                            yaxis=dict(autorange=True)
                         )
                         st.plotly_chart(fig_trend, use_container_width=True)
                     else:
@@ -1072,7 +1111,7 @@ with tab4:
                                         for insert in chunk:
                                             audit_inserts.append({
                                                 "action_type": "insert",
-                                                "record_id": None,  # Can be fetched if needed
+                                                "record_id": None,
                                                 "old_value": None,
                                                 "new_value": str(insert),
                                                 "timestamp": now_str
@@ -1118,7 +1157,7 @@ with tab4:
                     if fault_df.empty:
                         st.info("No tagged reasons/comments found for selection.")
                     else:
-                        fault_df['Label'] = fault_df.apply(lambda r: f"{r['plant']} - {r['input_name']}", axis=1)
+                        fault_df['Label'] = fault_df['plant']
                         # Expand ranges for plot [Requirement 4] Ensure legend
                         expanded_rows = []
                         for _, row in fault_df.iterrows():
@@ -1133,7 +1172,9 @@ with tab4:
                         if expanded_df.empty:
                             st.info("No tagged reasons/comments in the selected date range.")
                         else:
-                            expanded_df['plot_date'] = pd.to_datetime(expanded_df['plot_date']).dt.strftime('%Y-%m-%d')  # Convert to date-only string
+                            grouped = expanded_df.groupby(['plant', 'plot_date', 'reason']).size().reset_index(name='count')
+                            idx_max = grouped.groupby(['plant', 'plot_date'])['count'].idxmax()
+                            expanded_df = grouped.loc[idx_max].reset_index(drop=True)
 
                             # Limit color map to present reasons to avoid extra legend entries
                             present_reasons = expanded_df['reason'].unique()
@@ -1143,7 +1184,7 @@ with tab4:
                             import plotly.express as px
 
                             # Get all unique reasons present in your data
-                            all_reasons = expanded_df['reason'].unique().tolist()
+                            present_reasons = expanded_df['reason'].unique().tolist()
 
                             # Combine several Plotly qualitative palettes for many unique colors
                             color_pool = (
@@ -1162,33 +1203,35 @@ with tab4:
                                 cmap = plt.get_cmap('hsv', n)
                                 return [matplotlib.colors.rgb2hex(cmap(i)) for i in range(n)]
 
-                            if len(all_reasons) > len(color_pool):
-                                color_list = generate_hex_colors(len(all_reasons))
+                            if len(present_reasons) > len(color_pool):
+                                color_list = generate_hex_colors(len(present_reasons))
                             else:
                                 color_list = color_pool
 
                             # Final mapping from reason to color
-                            reason_color_map = {r: color_list[i % len(color_list)] for i, r in enumerate(all_reasons)}
+                            reason_color_map = {r: color_list[i % len(color_list)] for i, r in enumerate(present_reasons)}
 
                             fig = px.scatter(
                                 expanded_df,
                                 x='plot_date',
-                                y='Label',
+                                y='plant',
                                 color='reason',
                                 color_discrete_map=reason_color_map,   # <--- Use the new map!
-                                hover_data={'comment': True, 'deviation': ':.3f'}
+                                hover_data={'count': True}
                             )
 
                             fig.update_traces(marker=dict(size=16, line=dict(width=1, color='black')))
                             fig.update_layout(
                                 title="Fault Map: Equipment vs Date",
                                 xaxis_title="Date",
-                                yaxis_title="Equipment",
+                                yaxis_title="Plant",
                                 plot_bgcolor='white',
                                 height=400 + len(fault_df['Label'].unique()) * 10,
                                 showlegend=True,
                                 xaxis_tickformat='%Y-%m-%d',
-                                legend=dict(orientation='h', yanchor="bottom", y=1.02, xanchor="right", x=1)
+                                legend=dict(orientation='h', yanchor="bottom", y=1.02, xanchor="right", x=1),
+                                xaxis=dict(autorange=True),
+                                yaxis=dict(autorange=True)
                             )
                             st.plotly_chart(fig, use_container_width=True)
 
@@ -1434,7 +1477,10 @@ with tab5:
 
 
 
-            plant_reason_fig.update_layout(yaxis_range=[min(-100, plant_reason_dev['Avg Deviation (%)'].min() * 1.1), 0])  # Force -100 visibility
+            plant_reason_fig.update_layout(
+                xaxis=dict(autorange=True),
+                yaxis=dict(autorange=True)
+            )
             st.plotly_chart(plant_reason_fig, use_container_width=True)
 
             # ---- 4. Equipment filter as Plant_Equipment ----
