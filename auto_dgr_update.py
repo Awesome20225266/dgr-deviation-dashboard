@@ -65,7 +65,7 @@ def import_dgr_to_duckdb():
         start_col  = str(row["Data_Start_Col"]).strip()
         end_col    = str(row["Data_End_Col"]).strip()
 
-        # find file path
+        # locate the file
         for ext in (".xlsx", ".xlsm"):
             fpath = os.path.join(DGR_FOLDER, fname + ext)
             if os.path.exists(fpath):
@@ -83,7 +83,7 @@ def import_dgr_to_duckdb():
 
         cols = list(df.columns)
         if date_col not in cols:
-            print(f"❌ Date column '{date_col}' missing for {plant}.")
+            print(f"❌ Date column '{date_col}' missing for {plant}. Columns: {cols}")
             continue
         try:
             i0 = cols.index(start_col)
@@ -130,11 +130,15 @@ def git_push():
     attempt = 1
     while True:
         try:
-            # 1) Stage everything, then unstage DGR_Backup
+            # 1) Stage everything...
             subprocess.run(["git", "add", "-A"], check=True)
-            subprocess.run(["git", "reset", "--", DGR_FOLDER], check=True)
 
-            # 2) Check for local changes to stash
+            # 2) ...then immediately unstage DGR_Backup, __pycache__, and any .pyc
+            subprocess.run(["git", "reset", "--", DGR_FOLDER], check=True)
+            subprocess.run(["git", "rm", "-r", "--cached", "__pycache__"], check=False)
+            subprocess.run(["git", "reset", "--", "*.pyc"], check=False)
+
+            # 3) Check for local changes to stash
             status = subprocess.run(
                 ["git", "status", "--porcelain"],
                 capture_output=True, text=True
@@ -146,14 +150,14 @@ def git_push():
             else:
                 stashed = False
 
-            # 3) Pull updates
+            # 4) Pull remote updates
             print(f"🔄 Attempt {attempt}: Pulling remote changes...")
             pull = subprocess.run(["git", "pull", "--no-edit", "origin", "main"])
             if pull.returncode != 0:
                 print("❌ Git pull failed. Resolve conflicts and re-run the script.")
                 return
 
-            # 4) Re-apply your stash if needed
+            # 5) Re-apply your stash if we stashed
             if stashed:
                 print("🔄 Applying stashed changes...")
                 pop = subprocess.run(["git", "stash", "pop"])
@@ -164,11 +168,13 @@ def git_push():
                     print("     git commit -m 'Resolve merge conflict'")
                     print("     git push origin main\n")
                     return
-                # re-stage and unstage DGR_Backup again
+                # re-stage & unstage unwanted paths again
                 subprocess.run(["git", "add", "-A"], check=True)
                 subprocess.run(["git", "reset", "--", DGR_FOLDER], check=True)
+                subprocess.run(["git", "rm", "-r", "--cached", "__pycache__"], check=False)
+                subprocess.run(["git", "reset", "--", "*.pyc"], check=False)
 
-            # 5) Commit if there’s anything new
+            # 6) Commit if there’s anything to commit
             diff = subprocess.run(["git", "diff", "--cached", "--quiet"])
             if diff.returncode == 0:
                 print("⚠️ No changes to commit.")
@@ -178,7 +184,7 @@ def git_push():
                     check=True
                 )
 
-            # 6) Push
+            # 7) Push
             print(f"🔼 Attempt {attempt}: Pushing to remote...")
             push = subprocess.run(["git", "push", "origin", "main"])
             if push.returncode == 0:
