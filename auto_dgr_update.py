@@ -5,25 +5,24 @@ import duckdb
 from datetime import datetime
 import time
 
-MAPPING_FILE = "Mapping Sheet.xlsx"
-DGR_FOLDER = "DGR_Backup"
-DB_FILE = "dgr_data.duckdb"
-TABLE_NAME = "dgr_data"
-GIT_COMMIT_MSG = "Auto update DGR data and scripts (excluding DGR_Backup)"
+MAPPING_FILE    = "Mapping Sheet.xlsx"
+DGR_FOLDER      = "DGR_Backup"
+DB_FILE         = "dgr_data.duckdb"
+TABLE_NAME      = "dgr_data"
+GIT_COMMIT_MSG  = "Auto update DGR data and scripts (excluding DGR_Backup)"
 
 def clean_value(v):
     if pd.isnull(v):
         return None
-    vstr = str(v).replace("−", "-").replace("–", "-").strip()
-    vstr = vstr.replace(",", "")
+    vstr = str(v).replace("−", "-").replace("–", "-").strip().replace(",", "")
     try:
         if "%" in vstr:
             return float(vstr.replace("%", ""))
         val = float(vstr)
+        # convert small decimals into percentages
         if -1 < val < 1:
             return val * 100
-        else:
-            return val
+        return val
     except:
         return None
 
@@ -35,19 +34,17 @@ def import_dgr_to_duckdb():
         print(f"ERROR: Missing {DGR_FOLDER} folder")
         return
 
-    # Create DB if not exists
     fresh_db = not os.path.exists(DB_FILE)
     con = duckdb.connect(DB_FILE)
-    
     if fresh_db:
         con.execute(f"""
-        CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
-            plant VARCHAR,
-            file_name VARCHAR,
-            date DATE,
-            input_name VARCHAR,
-            value DOUBLE
-        )
+            CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
+                plant       VARCHAR,
+                file_name   VARCHAR,
+                date        DATE,
+                input_name  VARCHAR,
+                value       DOUBLE
+            )
         """)
         print("Created fresh database and table.")
     else:
@@ -56,24 +53,24 @@ def import_dgr_to_duckdb():
     mapping_df = pd.read_excel(MAPPING_FILE)
     print(f"Loaded mapping for {mapping_df.shape[0]} plants/rows.")
 
-    total_rows = 0
-    skipped_rows = 0
-    for idx, row in mapping_df.iterrows():
-        plant = str(row["Plant_Name"])
-        fname = str(row["File_Name"])
-        sheet = str(row["Sheet"])
-        header_row = int(row["Header_Row"]) - 1
-        date_col = str(row["Date_Col"]).strip()
-        data_start_col = str(row["Data_Start_Col"]).strip()
-        data_end_col = str(row["Data_End_Col"]).strip()
+    total_new = 0
+    total_skipped = 0
 
-        found = False
-        for ext in [".xlsx", ".xlsm"]:
+    for _, row in mapping_df.iterrows():
+        plant      = str(row["Plant_Name"])
+        fname      = str(row["File_Name"])
+        sheet      = str(row["Sheet"])
+        header_row = int(row["Header_Row"]) - 1
+        date_col   = str(row["Date_Col"]).strip()
+        start_col  = str(row["Data_Start_Col"]).strip()
+        end_col    = str(row["Data_End_Col"]).strip()
+
+        # find file path
+        for ext in (".xlsx", ".xlsm"):
             fpath = os.path.join(DGR_FOLDER, fname + ext)
             if os.path.exists(fpath):
-                found = True
                 break
-        if not found:
+        else:
             print(f"❌ File not found: {fname} (.xlsx/.xlsm)")
             continue
 
@@ -84,111 +81,120 @@ def import_dgr_to_duckdb():
             print(f"❌ Error reading {fpath}: {e}")
             continue
 
-        colnames = list(df.columns)
-        if date_col not in colnames:
-            print(f"❌ Date column '{date_col}' not found for plant {plant}. Columns: {colnames}")
+        cols = list(df.columns)
+        if date_col not in cols:
+            print(f"❌ Date column '{date_col}' missing for {plant}.")
             continue
         try:
-            start_idx = colnames.index(data_start_col)
-            end_idx = colnames.index(data_end_col)
-        except Exception as e:
-            print(f"❌ Data start/end column not found for plant {plant}: {e}")
+            i0 = cols.index(start_col)
+            i1 = cols.index(end_col)
+        except ValueError as e:
+            print(f"❌ Data columns not found for {plant}: {e}")
             continue
 
-        input_cols = colnames[start_idx:end_idx+1]
-        count = 0
+        new_count = 0
+        skip_count = 0
         for _, r in df.iterrows():
             thedate = pd.to_datetime(r[date_col], dayfirst=True, errors='coerce')
             if pd.isnull(thedate):
                 continue
-            for col in input_cols:
+            for col in cols[i0 : i1 + 1]:
                 v = clean_value(r[col])
                 if v is None:
                     continue
-                # Check if this (plant, file, date, input_name) is already in DB
+                # dedupe
                 exists = con.execute(f"""
                     SELECT 1 FROM {TABLE_NAME}
                     WHERE plant = ? AND file_name = ? AND date = ? AND input_name = ?
                     LIMIT 1
                 """, [plant, fname, thedate.date(), col]).fetchone()
                 if exists:
-                    skipped_rows += 1
+                    skip_count += 1
                     continue
                 con.execute(f"""
-                    INSERT INTO {TABLE_NAME} (plant, file_name, date, input_name, value)
+                    INSERT INTO {TABLE_NAME}
+                    (plant, file_name, date, input_name, value)
                     VALUES (?, ?, ?, ?, ?)
                 """, [plant, fname, thedate.date(), col, v])
-                count += 1
-        total_rows += count
-        print(f"✅ Imported {count} new rows for {plant} (skipped {skipped_rows} duplicates)")
+                new_count += 1
+
+        total_new += new_count
+        total_skipped += skip_count
+        print(f"✅ {plant}: imported {new_count} new rows (skipped {skip_count} duplicates)")
 
     con.close()
-    print(f"✅ All new DGR data imported into {DB_FILE} ({total_rows} new rows, {skipped_rows} skipped).")
+    print(f"✅ All done: {total_new} new rows, {total_skipped} skipped.")
 
 def git_push():
     print("Running Git push script...")
     attempt = 1
     while True:
         try:
-            # Stage all changes (including deletions, honoring .gitignore)
+            # 1) Stage everything, then unstage DGR_Backup
             subprocess.run(["git", "add", "-A"], check=True)
+            subprocess.run(["git", "reset", "--", DGR_FOLDER], check=True)
 
-            # Check for local uncommitted changes
-            diff_result = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
-            has_local_changes = diff_result.stdout.strip() != ""
-
-            # If local changes exist, stash them before pulling
-            stashed = False
-            if has_local_changes:
-                print("⚠️ Local uncommitted changes detected. Stashing before pulling remote updates...")
+            # 2) Check for local changes to stash
+            status = subprocess.run(
+                ["git", "status", "--porcelain"],
+                capture_output=True, text=True
+            ).stdout.strip()
+            if status:
+                print("⚠️ Local uncommitted changes detected. Stashing...")
                 subprocess.run(["git", "stash"], check=True)
                 stashed = True
+            else:
+                stashed = False
 
-            # Pull remote changes
+            # 3) Pull updates
             print(f"🔄 Attempt {attempt}: Pulling remote changes...")
             pull = subprocess.run(["git", "pull", "--no-edit", "origin", "main"])
             if pull.returncode != 0:
-                print("❌ Git pull failed. If you see merge conflicts, resolve them and re-run the script.")
+                print("❌ Git pull failed. Resolve conflicts and re-run the script.")
                 return
 
-            # If stashed, pop the stash, and re-add all changes
+            # 4) Re-apply your stash if needed
             if stashed:
                 print("🔄 Applying stashed changes...")
                 pop = subprocess.run(["git", "stash", "pop"])
                 if pop.returncode != 0:
-                    print("\n❗ Merge conflict occurred while applying your local changes after stash pop.")
-                    print("👉 Please open the conflicted files, resolve manually, and then run:")
-                    print("     git add <conflicted_file>")
-                    print("     git commit -m 'Resolve merge conflict after stash pop'")
-                    print("     git push origin main")
-                    print("Aborting automated push for your safety.\n")
+                    print("\n❗ Merge conflict occurred after stash pop.")
+                    print("👉 Please resolve conflicts, then run:")
+                    print("     git add <file>")
+                    print("     git commit -m 'Resolve merge conflict'")
+                    print("     git push origin main\n")
                     return
-                # *** Key fix: stage all changes again after stash pop ***
+                # re-stage and unstage DGR_Backup again
                 subprocess.run(["git", "add", "-A"], check=True)
+                subprocess.run(["git", "reset", "--", DGR_FOLDER], check=True)
 
-            # Now commit if there are any changes after merging
-            result = subprocess.run(["git", "diff", "--cached", "--quiet"])
-            if result.returncode == 0:
+            # 5) Commit if there’s anything new
+            diff = subprocess.run(["git", "diff", "--cached", "--quiet"])
+            if diff.returncode == 0:
                 print("⚠️ No changes to commit.")
             else:
-                subprocess.run(["git", "commit", "-m", GIT_COMMIT_MSG], check=True)
+                subprocess.run(
+                    ["git", "commit", "-m", GIT_COMMIT_MSG],
+                    check=True
+                )
 
+            # 6) Push
             print(f"🔼 Attempt {attempt}: Pushing to remote...")
             push = subprocess.run(["git", "push", "origin", "main"])
             if push.returncode == 0:
                 print("✅ Git push completed successfully.")
                 break
             else:
-                print("⚠️ Push was not successful—repository may have changed on remote. Will pull again and retry...")
+                print("⚠️ Push failed—retrying pull & push...")
                 attempt += 1
-                time.sleep(2)  # Small delay to avoid hammering server
+                time.sleep(2)
 
         except subprocess.CalledProcessError as e:
             print(f"❌ Git error: {e}")
             break
 
 def main():
-    print(f"=== DGR DB (incremental) + Git update started at {datetime.now()} ===")
+    print(f"=== DGR + Git update started at {datetime.now()} ===")
     import_dgr_to_duckdb()
     git_push()
     print(f"=== Completed at {datetime.now()} ===")
