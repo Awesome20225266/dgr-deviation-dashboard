@@ -4,6 +4,7 @@ import pandas as pd
 import duckdb
 from datetime import datetime
 import time
+import sys
 
 MAPPING_FILE    = "Mapping Sheet.xlsx"
 DGR_FOLDER      = "DGR_Backup"
@@ -19,7 +20,6 @@ def clean_value(v):
         if "%" in vstr:
             return float(vstr.replace("%", ""))
         val = float(vstr)
-        # convert small decimals into percentages
         if -1 < val < 1:
             return val * 100
         return val
@@ -102,7 +102,6 @@ def import_dgr_to_duckdb():
                 v = clean_value(r[col])
                 if v is None:
                     continue
-                # dedupe
                 exists = con.execute(f"""
                     SELECT 1 FROM {TABLE_NAME}
                     WHERE plant = ? AND file_name = ? AND date = ? AND input_name = ?
@@ -125,20 +124,46 @@ def import_dgr_to_duckdb():
     con.close()
     print(f"✅ All done: {total_new} new rows, {total_skipped} skipped.")
 
+def resolve_git_binary_conflicts():
+    """Auto-resolve merge conflicts for Excel and DuckDB files by keeping local version."""
+    print("\n--- Checking for binary file merge conflicts ---")
+    try:
+        output = subprocess.check_output(['git', 'status', '--porcelain'], encoding='utf-8')
+    except Exception as e:
+        print(f"Error running git status: {e}")
+        return False
+
+    conflicted = []
+    for line in output.splitlines():
+        if line.startswith('UU '):
+            conflicted.append(line[3:])
+
+    binary_exts = ('.xlsx', '.xlsm', '.xls', '.duckdb')
+    binary_conflicts = [f for f in conflicted if f.lower().endswith(binary_exts)]
+    if not binary_conflicts:
+        print("No binary file conflicts detected.")
+        return False
+
+    for fname in binary_conflicts:
+        print(f"Resolving conflict in {fname} with local version (ours)...")
+        subprocess.run(['git', 'checkout', '--ours', fname], check=True)
+        subprocess.run(['git', 'add', fname], check=True)
+
+    subprocess.run(['git', 'commit', '-m', "Resolve merge conflicts: keep local (ours) for binary files"], check=True)
+    subprocess.run(['git', 'push', 'origin', 'main'], check=True)
+    print("All binary conflicts resolved and pushed.\n")
+    return True
+
 def git_push():
     print("Running Git push script...")
     attempt = 1
     while True:
         try:
-            # 1) Stage everything...
             subprocess.run(["git", "add", "-A"], check=True)
-
-            # 2) ...then immediately unstage DGR_Backup, __pycache__, and any .pyc
             subprocess.run(["git", "reset", "--", DGR_FOLDER], check=True)
             subprocess.run(["git", "rm", "-r", "--cached", "__pycache__"], check=False)
             subprocess.run(["git", "reset", "--", "*.pyc"], check=False)
 
-            # 3) Check for local changes to stash
             status = subprocess.run(
                 ["git", "status", "--porcelain"],
                 capture_output=True, text=True
@@ -150,7 +175,6 @@ def git_push():
             else:
                 stashed = False
 
-            # 4) Pull remote updates
             print(f"🔄 Attempt {attempt}: Pulling remote changes...")
             pull = subprocess.run(["git", "pull", "--no-edit", "origin", "main"])
             if pull.returncode != 0:
@@ -163,11 +187,15 @@ def git_push():
                 pop = subprocess.run(["git", "stash", "pop"])
                 if pop.returncode != 0:
                     print("\n❗ Merge conflict occurred after stash pop.")
-                    print("👉 Please resolve conflicts, then run:")
-                    print("     git add <file>")
-                    print("     git commit -m 'Resolve merge conflict'")
-                    print("     git push origin main\n")
-                    return
+                    # Try to auto-resolve binary file conflicts:
+                    resolved = resolve_git_binary_conflicts()
+                    if not resolved:
+                        print("👉 Please resolve any remaining conflicts, then run:")
+                        print("     git add <file>")
+                        print("     git commit -m 'Resolve merge conflict'")
+                        print("     git push origin main\n")
+                        return
+                    # After successful auto-resolve, continue to next step.
                 # re-stage & unstage unwanted paths again
                 subprocess.run(["git", "add", "-A"], check=True)
                 subprocess.run(["git", "reset", "--", DGR_FOLDER], check=True)
