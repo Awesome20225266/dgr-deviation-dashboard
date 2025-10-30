@@ -267,8 +267,8 @@ if not plant_select or not date_start or not date_end:
     st.warning("Please select Plant(s) and Date range to view dashboard data.")
     st.stop()
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([ 
-    "Generate Table", "Generate Ranking", "Visualisation", "Portfolio Deep Analytics", "Visual Summary", "Comment Map", "Add Reason"
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([ 
+	"Generate Table", "Generate Ranking", "Visualisation", "Portfolio Deep Analytics", "Visual Summary", "Comment Map", "Add Reason", "Portfolio Capacity"
 ])
 # --- TAB 1: GENERATE TABLE ---
 with tab1:
@@ -1780,3 +1780,131 @@ with tab7:
                 st.rerun()
             except Exception as e:
                 st.error(f"Error updating reason: {e}. Check Supabase permissions or table schema.")
+
+# --- TAB 8: PORTFOLIO CAPACITY ---
+with tab8:
+	st.markdown('<div class="section-header"><h3>🧰 Portfolio Capacity</h3></div>', unsafe_allow_html=True)
+	if not plant_select or not date_start or not date_end:
+		st.warning("Please select at least one plant and a date range to continue.")
+	else:
+		capacity_date = st.date_input("Capacity Date", value=date_start, min_value=date_start, max_value=date_end, key="pc_date")
+
+		with st.spinner("Loading equipment list..."):
+			with duckdb.connect(DB_PATH) as con:
+				q_inputs = f"""
+					SELECT DISTINCT plant, input_name
+					FROM {TABLE_NAME}
+					WHERE plant IN ({','.join(['?'] * len(plant_select))})
+					  AND date BETWEEN ? AND ?
+					ORDER BY plant, input_name
+				"""
+				params = plant_select + [date_start, date_end]
+				inputs_df = safe_db_execute(con, q_inputs, params)
+
+		if inputs_df.empty:
+			st.info("No equipment found for the selected filters.")
+		else:
+			# Map equipment per plant using mapping sheet bounds when available
+			rows = []
+			for plant in plant_select:
+				plant_inputs = inputs_df[inputs_df['plant'] == plant]['input_name'].tolist()
+				mapped_equipment = plant_inputs
+				try:
+					mapping_row = mapping_df[mapping_df["Plant_Name"] == plant].iloc[0]
+					start_col = mapping_row["Data_Start_Col"]
+					end_col = mapping_row["Data_End_Col"]
+					if start_col in plant_inputs and end_col in plant_inputs:
+						sidx = plant_inputs.index(start_col)
+						eidx = plant_inputs.index(end_col)
+						mapped_equipment = plant_inputs[sidx:eidx+1]
+				except Exception:
+					pass
+
+				for eq in mapped_equipment:
+					rows.append({"Plant Name": plant, "Equipment Name": eq})
+
+			equip_df = pd.DataFrame(rows).drop_duplicates()
+
+			# Prefill capacities from Supabase for selected date
+			supabase = get_supabase_client()
+			bmap = {}
+			try:
+				resp = supabase.table("portfolio_capacity").select("plant,input_name,design_capacity,breakdown_capacity").in_("plant", plant_select).eq("date", str(capacity_date)).execute()
+				data_existing = resp.data if resp.data else []
+				bmap = {(r['plant'], r['input_name']): r for r in data_existing}
+			except Exception:
+				bmap = {}
+
+			design_vals = []
+			breakdown_vals = []
+			for _, r in equip_df.iterrows():
+				key = (r['Plant Name'], r['Equipment Name'])
+				if key in bmap:
+					design_vals.append(bmap[key].get('design_capacity'))
+					breakdown_vals.append(bmap[key].get('breakdown_capacity'))
+				else:
+					design_vals.append(None)
+					breakdown_vals.append(None)
+
+			equip_df['Design Capacity (MW)'] = design_vals
+			equip_df['Breakdown Capacity (MW)'] = breakdown_vals
+			equip_df['Actual Capacity (MW)'] = equip_df.apply(
+				lambda row: (row['Design Capacity (MW)'] - row['Breakdown Capacity (MW)']) if pd.notnull(row['Design Capacity (MW)']) and pd.notnull(row['Breakdown Capacity (MW)']) else None,
+				axis=1
+			)
+
+			edited_df = st.data_editor(
+				equip_df,
+				key="pc_editor",
+				num_rows="dynamic",
+				use_container_width=True,
+				column_config={
+					"Plant Name": st.column_config.TextColumn(disabled=True),
+					"Equipment Name": st.column_config.TextColumn(disabled=True),
+					"Design Capacity (MW)": st.column_config.NumberColumn(help="Auto-fill from DGR later; editable for now"),
+					"Breakdown Capacity (MW)": st.column_config.NumberColumn(step=0.1),
+					"Actual Capacity (MW)": st.column_config.NumberColumn(disabled=True),
+				}
+			)
+
+			if not edited_df.empty:
+				edited_df['Actual Capacity (MW)'] = edited_df.apply(
+					lambda row: (row['Design Capacity (MW)'] - row['Breakdown Capacity (MW)']) if pd.notnull(row['Design Capacity (MW)']) and pd.notnull(row['Breakdown Capacity (MW)']) else None,
+					axis=1
+				)
+
+			if st.button("Save / Update Capacity", type="primary"):
+				saved = 0
+				errors = 0
+				for _, row in edited_df.iterrows():
+					plant = row['Plant Name']
+					equip = row['Equipment Name']
+					dcap = row['Design Capacity (MW)']
+					bcap = row['Breakdown Capacity (MW)']
+					acap = row['Actual Capacity (MW)']
+					try:
+						match = supabase.table("portfolio_capacity").select("id").eq("plant", plant).eq("input_name", equip).eq("date", str(capacity_date)).execute()
+						if match.data:
+							supabase.table("portfolio_capacity").update({
+								"design_capacity": dcap,
+								"breakdown_capacity": bcap,
+								"actual_capacity": acap,
+								"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+							}).eq("plant", plant).eq("input_name", equip).eq("date", str(capacity_date)).execute()
+						else:
+							supabase.table("portfolio_capacity").insert({
+								"plant": plant,
+								"input_name": equip,
+								"date": str(capacity_date),
+								"design_capacity": dcap,
+								"breakdown_capacity": bcap,
+								"actual_capacity": acap,
+								"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+							}).execute()
+						saved += 1
+					except Exception:
+						errors += 1
+				if errors == 0:
+					st.success(f"Saved capacity for {saved} rows on {capacity_date}.")
+				else:
+					st.warning(f"Saved {saved} rows with {errors} errors. Check Supabase permissions/schema.")
